@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+poetry.lock
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+pnpm-lock.yaml
+
+# R
+.Rhistory
+.Rdata
+.RData
+renv/library/
+renv/staging/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / Secrets
+.env
+.env.local
+.env.*.local
+
+# Docker
+docker-compose.override.yml
+
+# Data (large files)
+*.pbf
+*.osm
+*.gtfs.zip
+/data/
+
+# Test / Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+coverage/
+.local/

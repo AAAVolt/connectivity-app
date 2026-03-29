@@ -1,0 +1,324 @@
+"""Bizkaia Connectivity data pipeline CLI."""
+
+from pathlib import Path
+from typing import Optional
+
+import structlog
+import typer
+
+from worker.db import get_session
+
+logger = structlog.get_logger()
+
+app = typer.Typer(
+    name="bizkaia-worker",
+    help="Bizkaia Connectivity data pipeline.",
+)
+
+DEMO_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+
+
+@app.command()
+def hello(
+    name: str = typer.Option("world", help="Name to greet"),
+) -> None:
+    """Say hello – verifies the CLI works."""
+    logger.info("hello_command", name=name)
+    typer.echo(f"Hello, {name}! The worker pipeline is ready.")
+
+
+@app.command()
+def build_grid(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    cell_size: int = typer.Option(100, help="Grid cell size in metres"),
+) -> None:
+    """Generate a 100 m grid over the tenant's boundary."""
+    from worker.pipeline.grid import build_grid as _build_grid
+
+    session = get_session()
+    try:
+        count = _build_grid(session, tenant, cell_size_m=cell_size)
+        typer.echo(f"Grid built: {count} cells created.")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def disaggregate_population(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+) -> None:
+    """Disaggregate population from source polygons to grid cells."""
+    from worker.pipeline.population import disaggregate_population as _disaggregate
+
+    session = get_session()
+    try:
+        stats = _disaggregate(session, tenant)
+        typer.echo("Population disaggregated:")
+        typer.echo(f"  Source population:     {stats['source_population']:.0f}")
+        typer.echo(f"  Allocated population:  {stats['allocated_population']:.0f}")
+        typer.echo(f"  Cells with population: {stats['cells_with_population']}")
+        typer.echo(f"  Total cells:           {stats['total_cells']}")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def import_travel_times(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    input_dir: Path = typer.Option(
+        "/data/processed/travel_times", help="Directory containing CSV files"
+    ),
+) -> None:
+    """Import travel time CSV files from the R5R output directory."""
+    from worker.pipeline.travel_times import import_travel_times as _import
+
+    session = get_session()
+    try:
+        stats = _import(session, tenant, input_dir)
+        typer.echo("Travel times imported:")
+        typer.echo(f"  Files processed: {stats['files_processed']}")
+        typer.echo(f"  Rows imported:   {stats['rows_imported']}")
+        typer.echo(f"  Rows skipped:    {stats['rows_skipped']}")
+        typer.echo(f"  Min time:        {stats['min_travel_time']:.1f} min")
+        typer.echo(f"  Max time:        {stats['max_travel_time']:.1f} min")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def seed_demo(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    cell_size: int = typer.Option(100, help="Grid cell size in metres"),
+) -> None:
+    """Seed the database with synthetic data for local development.
+
+    Runs the full pipeline: grid → population → destinations →
+    travel times → scores, using synthetic destinations and
+    distance-based travel times (no OSM/GTFS/R5R required).
+    """
+    from worker.pipeline.grid import build_grid as _build_grid
+    from worker.pipeline.population import disaggregate_population as _disaggregate
+    from worker.pipeline.seed_demo import seed_destinations, seed_travel_times
+    from worker.scoring.compute_scores import compute_scores as _compute
+
+    session = get_session()
+    try:
+        typer.echo("Step 1/5: Building grid...")
+        cell_count = _build_grid(session, tenant, cell_size_m=cell_size)
+        typer.echo(f"  → {cell_count} cells created")
+
+        typer.echo("Step 2/5: Disaggregating population...")
+        pop_stats = _disaggregate(session, tenant)
+        typer.echo(f"  → {pop_stats['cells_with_population']} cells with population")
+
+        typer.echo("Step 3/5: Seeding destinations...")
+        dest_count = seed_destinations(session, tenant)
+        typer.echo(f"  → {dest_count} destinations created")
+
+        typer.echo("Step 4/5: Generating travel times...")
+        tt_counts = seed_travel_times(session, tenant)
+        typer.echo(f"  → WALK: {tt_counts['WALK']}, TRANSIT: {tt_counts['TRANSIT']}")
+
+        typer.echo("Step 5/5: Computing scores...")
+        score_stats = _compute(session, tenant)
+        typer.echo(f"  → {score_stats['scores_written']} connectivity scores")
+        typer.echo(f"  → {score_stats['combined_written']} combined scores")
+
+        typer.echo("\nDemo data seeded successfully!")
+        typer.echo("Start the backend and frontend to explore the data.")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def run_pipeline(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    cell_size: int = typer.Option(100, help="Grid cell size in metres"),
+) -> None:
+    """Run the full pipeline over the current boundary and real destinations.
+
+    Uses PostGIS-accelerated travel time generation (ST_DWithin)
+    instead of Python loops. Works efficiently even for large grids.
+
+    Assumes boundary and destinations are already imported
+    (run import-geoeuskadi first).
+    """
+    from worker.pipeline.grid import build_grid as _build_grid
+    from worker.pipeline.population import disaggregate_population as _disaggregate
+    from worker.pipeline.travel_times_sql import generate_travel_times_sql
+    from worker.scoring.compute_scores import compute_scores as _compute
+
+    session = get_session()
+    try:
+        typer.echo(f"Step 1/4: Building {cell_size}m grid over boundary...")
+        cell_count = _build_grid(session, tenant, cell_size_m=cell_size)
+        typer.echo(f"  → {cell_count} cells created")
+
+        typer.echo("Step 2/4: Disaggregating population...")
+        pop_stats = _disaggregate(session, tenant)
+        typer.echo(f"  → {pop_stats['cells_with_population']} cells with population")
+
+        typer.echo("Step 3/4: Generating travel times (PostGIS)...")
+        tt_counts = generate_travel_times_sql(session, tenant)
+        typer.echo(f"  → WALK: {tt_counts.get('WALK', 0):,}")
+        typer.echo(f"  → TRANSIT: {tt_counts.get('TRANSIT', 0):,}")
+
+        typer.echo("Step 4/4: Computing scores...")
+        score_stats = _compute(session, tenant)
+        typer.echo(f"  → {score_stats['scores_written']:,} connectivity scores")
+        typer.echo(f"  → {score_stats['combined_written']:,} combined scores")
+
+        typer.echo("\nPipeline complete!")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def compute_scores(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    config_path: Optional[Path] = typer.Option(
+        None, help="Path to scoring YAML config (default: worker/config/scoring.yaml)"
+    ),
+) -> None:
+    """Compute connectivity and combined scores for all grid cells."""
+    from worker.scoring.compute_scores import compute_scores as _compute
+    from worker.scoring.config import load_scoring_config
+
+    scoring_config = load_scoring_config(config_path) if config_path else None
+    session = get_session()
+    try:
+        stats = _compute(session, tenant, config=scoring_config)
+        typer.echo("Scores computed:")
+        typer.echo(f"  Connectivity scores: {stats['scores_written']}")
+        typer.echo(f"  Combined scores:     {stats['combined_written']}")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def import_geoeuskadi(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+) -> None:
+    """Import real Bizkaia data from GeoEuskadi ArcGIS REST services.
+
+    Downloads and imports:
+      - Bizkaia territory boundary
+      - 114 municipality boundaries
+      - Schools, health centres, supermarkets, employment zones
+    """
+    from worker.pipeline.geoeuskadi import (
+        import_bizkaia_boundary,
+        import_comarcas,
+        import_health,
+        import_jobs,
+        import_municipalities,
+        import_schools,
+        import_supermarkets,
+    )
+
+    session = get_session()
+    try:
+        typer.echo("Importing Bizkaia boundary...")
+        import_bizkaia_boundary(session, tenant)
+        typer.echo("  → Bizkaia boundary imported")
+
+        typer.echo("Importing municipalities...")
+        n = import_municipalities(session, tenant)
+        typer.echo(f"  → {n} municipalities imported")
+
+        typer.echo("Importing comarcas...")
+        n = import_comarcas(session, tenant)
+        typer.echo(f"  → {n} comarcas imported")
+
+        typer.echo("Importing schools...")
+        n = import_schools(session, tenant)
+        typer.echo(f"  → {n} schools imported")
+
+        typer.echo("Importing health centres & pharmacies...")
+        n = import_health(session, tenant)
+        typer.echo(f"  → {n} health facilities imported")
+
+        typer.echo("Importing supermarkets...")
+        n = import_supermarkets(session, tenant)
+        typer.echo(f"  → {n} supermarkets imported")
+
+        typer.echo("Importing employment zones...")
+        n = import_jobs(session, tenant)
+        typer.echo(f"  → {n} employment zones imported")
+
+        typer.echo("\nGeoEuskadi import complete!")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def download_gtfs(
+    output_dir: Path = typer.Option(
+        "/data/gtfs", help="Output directory for GTFS zip files"
+    ),
+) -> None:
+    """Download GTFS feeds for all Bizkaia transit operators.
+
+    Downloads from Moveuskadi (geo.euskadi.eus), updated daily.
+    Operators: Bizkaibus, Bilbobus, MetroBilbao, Euskotren,
+    Renfe_Cercanias, La_Union, FunicularArtxanda, Transbordador_Vizcaya.
+    """
+    from worker.pipeline.gtfs_download import download_gtfs_feeds
+
+    typer.echo(f"Downloading GTFS feeds to {output_dir}...")
+    results = download_gtfs_feeds(output_dir)
+    for operator, status in results.items():
+        typer.echo(f"  {operator}: {status}")
+    typer.echo("\nGTFS download complete!")
+    typer.echo("Place these files in /data/network/ for R5R routing.")
+
+
+@app.command()
+def import_gtfs_shapes(
+    gtfs_dir: Path = typer.Option(
+        "/data/gtfs", help="Directory containing .gtfs.zip files"
+    ),
+) -> None:
+    """Import route shapes and stops from downloaded GTFS feeds into the DB.
+
+    Parses shapes.txt, routes.txt, trips.txt, and stops.txt from each
+    operator's GTFS zip and writes them as PostGIS geometries.
+    """
+    from worker.pipeline.gtfs_import import import_gtfs_to_db
+
+    session = get_session()
+    try:
+        results = import_gtfs_to_db(session, gtfs_dir)
+        typer.echo("GTFS import results:")
+        for operator, stats in results.items():
+            typer.echo(f"  {operator}: {stats.get('routes', 0)} routes, {stats.get('stops', 0)} stops")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+if __name__ == "__main__":
+    app()

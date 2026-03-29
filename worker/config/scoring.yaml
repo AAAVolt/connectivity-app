@@ -1,0 +1,41 @@
+# Scoring parameters for the Bizkaia Connectivity MVP
+#
+# purpose_map: maps destination_types.code → scoring purpose bucket
+# impedance:   exp(-alpha * t) decay rates per (mode, purpose)
+# diminishing:  concave transform exponent (0 < beta < 1)
+# combined_weights: must sum to 1.0 across all (mode, purpose) pairs
+
+purpose_map:
+  jobs: jobs
+  school_primary: education
+  health_gp: health
+  supermarket: retail
+
+impedance:
+  WALK:
+    jobs: 0.08
+    education: 0.06
+    health: 0.05
+    retail: 0.07
+  TRANSIT:
+    jobs: 0.03
+    education: 0.025
+    health: 0.02
+    retail: 0.03
+
+diminishing:
+  beta: 0.7
+
+max_travel_time: 60
+
+combined_weights:
+  WALK:
+    jobs: 0.15
+    education: 0.10
+    health: 0.125
+    retail: 0.125
+  TRANSIT:
+    jobs: 0.15
+    education: 0.10
+    health: 0.125
+    retail: 0.125

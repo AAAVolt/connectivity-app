@@ -1,0 +1,13 @@
+.git
+.idea
+.claude
+**/node_modules
+**/__pycache__
+**/.next
+**/.pytest_cache
+**/venv
+**/.venv
+**/dist
+**/build
+*.md
+data/

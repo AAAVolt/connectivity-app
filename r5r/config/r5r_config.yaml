@@ -1,0 +1,29 @@
+# R5R configuration for Bizkaia Connectivity MVP
+
+# Paths (inside Docker container)
+data_path: /data/network
+output_path: /data/output
+
+# Travel modes to evaluate
+modes:
+  - WALK
+  - TRANSIT
+
+# Departure time window (AM peak)
+departure_datetime: "2024-03-15 08:00:00"
+departure_time_start: "07:00:00"
+departure_time_end: "10:00:00"
+time_window_minutes: 60
+
+# Maximum travel time in minutes
+max_travel_time_minutes: 60
+
+# Percentiles for travel time estimates within the time window
+percentiles:
+  - 50
+
+# Walk speed in km/h
+walk_speed_kmh: 3.6
+
+# Max walk distance in meters
+max_walk_distance_m: 2000
