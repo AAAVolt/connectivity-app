@@ -69,13 +69,45 @@ def disaggregate_population(
 
 
 @app.command()
+def export_r5r(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    output_dir: Path = typer.Option(
+        "/data/network", help="Output directory for origins.csv and destinations.csv"
+    ),
+) -> None:
+    """Export grid-cell origins and destinations as CSV for R5R routing.
+
+    Run this after build-grid and import-geoeuskadi, before running
+    the R5R Docker container.
+    """
+    from worker.pipeline.export_r5r import export_r5r_inputs
+
+    session = get_session()
+    try:
+        stats = export_r5r_inputs(session, tenant, output_dir)
+        typer.echo("R5R inputs exported:")
+        typer.echo(f"  Origins:      {stats['origins']}")
+        typer.echo(f"  Destinations: {stats['destinations']}")
+        typer.echo(f"  Output dir:   {output_dir}")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
 def import_travel_times(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
     input_dir: Path = typer.Option(
-        "/data/processed/travel_times", help="Directory containing CSV files"
+        "/data/output", help="Directory containing R5R ttm_*.parquet files"
     ),
 ) -> None:
-    """Import travel time CSV files from the R5R output directory."""
+    """Import R5R Parquet travel-time matrices into the database.
+
+    Reads ttm_*.parquet files produced by the R5R container.
+    Mode is inferred from filename (e.g. ttm_transit.parquet → TRANSIT).
+    """
     from worker.pipeline.travel_times import import_travel_times as _import
 
     session = get_session()
@@ -85,8 +117,9 @@ def import_travel_times(
         typer.echo(f"  Files processed: {stats['files_processed']}")
         typer.echo(f"  Rows imported:   {stats['rows_imported']}")
         typer.echo(f"  Rows skipped:    {stats['rows_skipped']}")
-        typer.echo(f"  Min time:        {stats['min_travel_time']:.1f} min")
-        typer.echo(f"  Max time:        {stats['max_travel_time']:.1f} min")
+        mode_counts = stats.get("mode_counts", {})
+        for mode, count in sorted(mode_counts.items()):
+            typer.echo(f"  {mode}: {count:,} rows")
     except Exception as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -146,18 +179,25 @@ def seed_demo(
 def run_pipeline(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
     cell_size: int = typer.Option(100, help="Grid cell size in metres"),
+    r5r_output: Path = typer.Option(
+        "/data/output", help="Directory with R5R ttm_*.parquet files"
+    ),
 ) -> None:
-    """Run the full pipeline over the current boundary and real destinations.
+    """Run the full pipeline using R5R-routed travel times.
 
-    Uses PostGIS-accelerated travel time generation (ST_DWithin)
-    instead of Python loops. Works efficiently even for large grids.
+    Steps:
+      1. Build grid
+      2. Disaggregate population
+      3. Import R5R travel-time matrices (parquet)
+      4. Compute scores
 
-    Assumes boundary and destinations are already imported
-    (run import-geoeuskadi first).
+    Prerequisites:
+      - Boundary + destinations imported (run import-geoeuskadi first)
+      - R5R travel times computed (run export-r5r, then the R5R container)
     """
     from worker.pipeline.grid import build_grid as _build_grid
     from worker.pipeline.population import disaggregate_population as _disaggregate
-    from worker.pipeline.travel_times_sql import generate_travel_times_sql
+    from worker.pipeline.travel_times import import_travel_times as _import_tt
     from worker.scoring.compute_scores import compute_scores as _compute
 
     session = get_session()
@@ -170,10 +210,11 @@ def run_pipeline(
         pop_stats = _disaggregate(session, tenant)
         typer.echo(f"  → {pop_stats['cells_with_population']} cells with population")
 
-        typer.echo("Step 3/4: Generating travel times (PostGIS)...")
-        tt_counts = generate_travel_times_sql(session, tenant)
-        typer.echo(f"  → WALK: {tt_counts.get('WALK', 0):,}")
-        typer.echo(f"  → TRANSIT: {tt_counts.get('TRANSIT', 0):,}")
+        typer.echo("Step 3/4: Importing R5R travel times...")
+        tt_stats = _import_tt(session, tenant, r5r_output)
+        typer.echo(f"  → {tt_stats['rows_imported']:,} travel time rows imported")
+        for mode, count in sorted(tt_stats.get("mode_counts", {}).items()):
+            typer.echo(f"     {mode}: {count:,}")
 
         typer.echo("Step 4/4: Computing scores...")
         score_stats = _compute(session, tenant)
@@ -194,18 +235,31 @@ def compute_scores(
     config_path: Optional[Path] = typer.Option(
         None, help="Path to scoring YAML config (default: worker/config/scoring.yaml)"
     ),
+    departure_time: Optional[str] = typer.Option(
+        None,
+        help="Compute for a single departure time slot (HH:MM). "
+        "If omitted, computes for all slots found in travel_times.",
+    ),
 ) -> None:
-    """Compute connectivity and combined scores for all grid cells."""
+    """Compute connectivity and combined scores for all grid cells.
+
+    By default computes scores for every departure_time slot present in
+    the travel_times table.  Pass --departure-time to process a single slot.
+    """
     from worker.scoring.compute_scores import compute_scores as _compute
     from worker.scoring.config import load_scoring_config
 
     scoring_config = load_scoring_config(config_path) if config_path else None
     session = get_session()
     try:
-        stats = _compute(session, tenant, config=scoring_config)
+        stats = _compute(
+            session, tenant, config=scoring_config, departure_time=departure_time
+        )
         typer.echo("Scores computed:")
         typer.echo(f"  Connectivity scores: {stats['scores_written']}")
         typer.echo(f"  Combined scores:     {stats['combined_written']}")
+        dep_times = stats.get("departure_times", [])
+        typer.echo(f"  Departure slots:     {len(dep_times)}")
     except Exception as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc

@@ -4,26 +4,38 @@
 data_path: /data/network
 output_path: /data/output
 
+# Origin/destination CSV files (exported by worker export-r5r command)
+origins_csv: /data/network/origins.csv
+destinations_csv: /data/network/destinations.csv
+
 # Travel modes to evaluate
+# TRANSIT includes walk access/egress to stops automatically via r5r.
 modes:
-  - WALK
   - TRANSIT
 
-# Departure time window (AM peak)
-departure_datetime: "2024-03-15 08:00:00"
-departure_time_start: "07:00:00"
-departure_time_end: "10:00:00"
-time_window_minutes: 60
+# Reference date (weekday within GTFS validity period)
+departure_date: "2026-04-14"
+
+# Time-of-day slots: compute every 30 minutes from 00:00 to 23:30 (48 slots).
+# Each slot samples departures within a `time_window_minutes` window.
+departure_time_start: "00:00"
+departure_time_end: "23:30"
+departure_slot_interval_minutes: 30
+
+# R5R time-window: for each slot, sample departures over this many minutes
+# and take the requested percentile. 30 min aligns with the slot interval.
+time_window_minutes: 30
 
 # Maximum travel time in minutes
-max_travel_time_minutes: 60
+max_travel_time_minutes: 120
 
 # Percentiles for travel time estimates within the time window
 percentiles:
   - 50
 
-# Walk speed in km/h
+# Walk parameters
 walk_speed_kmh: 3.6
-
-# Max walk distance in meters
 max_walk_distance_m: 2000
+
+# R5R memory allocation
+max_memory_mb: 4096

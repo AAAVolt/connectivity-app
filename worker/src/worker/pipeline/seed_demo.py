@@ -3,6 +3,9 @@
 Creates dummy destinations and distance-based travel times so the full
 pipeline (grid → population → travel times → scores) can run without
 real OSM/GTFS data or the R5R routing container.
+
+Generates travel times for multiple departure time slots to demonstrate
+time-of-day variation in accessibility.
 """
 
 from __future__ import annotations
@@ -26,6 +29,32 @@ WALK_SPEED_KMH = 3.6
 TRANSIT_SPEED_KMH = 15.0
 TRANSIT_WAIT_MIN = 5.0
 MAX_TRAVEL_TIME = 60.0
+
+# Departure time slots for demo: every 30 min across the day (48 slots)
+DEMO_DEPARTURE_SLOTS = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 30)]
+
+# Time-of-day multipliers for transit speed and wait time.
+# Simulates: frequent peak service, moderate midday, sparse night.
+_TRANSIT_TIME_MULTIPLIERS: dict[str, tuple[float, float]] = {}
+for _h in range(24):
+    for _m in (0, 30):
+        _slot = f"{_h:02d}:{_m:02d}"
+        if 7 <= _h <= 9:
+            # AM peak: fast, short waits
+            _TRANSIT_TIME_MULTIPLIERS[_slot] = (1.0, 1.0)
+        elif 17 <= _h <= 19:
+            # PM peak: fast, short waits
+            _TRANSIT_TIME_MULTIPLIERS[_slot] = (1.0, 1.0)
+        elif 10 <= _h <= 16:
+            # Midday: slightly slower, moderate waits
+            _TRANSIT_TIME_MULTIPLIERS[_slot] = (1.15, 1.5)
+        elif 20 <= _h <= 22:
+            # Evening: slower, longer waits
+            _TRANSIT_TIME_MULTIPLIERS[_slot] = (1.3, 2.5)
+        else:
+            # Night (23:00 – 06:30): much slower / no service
+            _TRANSIT_TIME_MULTIPLIERS[_slot] = (2.0, 4.0)
+
 
 # Synthetic destination locations within the Bilbao demo area
 # (lon, lat, name) tuples grouped by destination type code
@@ -126,9 +155,12 @@ def seed_travel_times(
 ) -> dict[str, int]:
     """Generate synthetic travel times based on straight-line distance.
 
-    For each (grid_cell, destination, mode) combination, computes an
-    approximate travel time using haversine distance and mode-specific
-    speeds.  Only pairs within the 60-minute cutoff are stored.
+    For each (grid_cell, destination, mode, departure_time) combination,
+    computes an approximate travel time using haversine distance and
+    mode-specific speeds with time-of-day variation.
+
+    Walk times are constant across the day; transit times vary to
+    simulate peak vs off-peak service.
 
     Args:
         sample_fraction: Fraction of cells to process (0–1). Use < 1.0
@@ -173,11 +205,6 @@ def seed_travel_times(
     if not dests:
         raise ValueError("No destinations found — run seed-destinations first")
 
-    modes = [
-        ("WALK", WALK_SPEED_KMH, 0.0),
-        ("TRANSIT", TRANSIT_SPEED_KMH, TRANSIT_WAIT_MIN),
-    ]
-
     batch: list[dict[str, object]] = []
     counts: dict[str, int] = {"WALK": 0, "TRANSIT": 0}
     batch_size = 5000
@@ -186,28 +213,50 @@ def seed_travel_times(
         for dest_id, dest_lon, dest_lat in dests:
             dist_km = _haversine_km(cell_lon, cell_lat, dest_lon, dest_lat)
 
-            for mode, speed, wait in modes:
-                # Add ±15% jitter for realism
-                jitter = 0.85 + (hash((cell_id, dest_id, mode)) % 31) / 100.0
-                travel_min = (dist_km / speed * 60.0 + wait) * jitter
+            # Walk: constant speed, generate for all slots
+            for slot in DEMO_DEPARTURE_SLOTS:
+                jitter = 0.85 + (hash((cell_id, dest_id, "WALK")) % 31) / 100.0
+                walk_min = (dist_km / WALK_SPEED_KMH * 60.0) * jitter
+                if walk_min <= MAX_TRAVEL_TIME:
+                    walk_min = round(max(1.0, walk_min), 1)
+                    batch.append({
+                        "tenant_id": tenant_id,
+                        "origin_cell_id": cell_id,
+                        "destination_id": dest_id,
+                        "mode": "WALK",
+                        "departure_time": slot,
+                        "travel_time_minutes": walk_min,
+                    })
+                    counts["WALK"] += 1
 
-                if travel_min > MAX_TRAVEL_TIME:
-                    continue
+                    if len(batch) >= batch_size:
+                        _insert_batch(session, batch)
+                        batch = []
 
-                travel_min = round(max(1.0, travel_min), 1)
+            # Transit: time-varying speed and wait
+            for slot in DEMO_DEPARTURE_SLOTS:
+                speed_mult, wait_mult = _TRANSIT_TIME_MULTIPLIERS[slot]
+                jitter = 0.85 + (hash((cell_id, dest_id, "TRANSIT")) % 31) / 100.0
+                transit_min = (
+                    dist_km / TRANSIT_SPEED_KMH * 60.0 * speed_mult
+                    + TRANSIT_WAIT_MIN * wait_mult
+                ) * jitter
 
-                batch.append({
-                    "tenant_id": tenant_id,
-                    "origin_cell_id": cell_id,
-                    "destination_id": dest_id,
-                    "mode": mode,
-                    "travel_time_minutes": travel_min,
-                })
-                counts[mode] += 1
+                if transit_min <= MAX_TRAVEL_TIME:
+                    transit_min = round(max(1.0, transit_min), 1)
+                    batch.append({
+                        "tenant_id": tenant_id,
+                        "origin_cell_id": cell_id,
+                        "destination_id": dest_id,
+                        "mode": "TRANSIT",
+                        "departure_time": slot,
+                        "travel_time_minutes": transit_min,
+                    })
+                    counts["TRANSIT"] += 1
 
-                if len(batch) >= batch_size:
-                    _insert_batch(session, batch)
-                    batch = []
+                    if len(batch) >= batch_size:
+                        _insert_batch(session, batch)
+                        batch = []
 
     if batch:
         _insert_batch(session, batch)
@@ -223,9 +272,11 @@ def _insert_batch(session: Session, batch: list[dict[str, object]]) -> None:
     session.execute(
         text("""
             INSERT INTO travel_times
-                (tenant_id, origin_cell_id, destination_id, mode, travel_time_minutes)
+                (tenant_id, origin_cell_id, destination_id, mode,
+                 departure_time, travel_time_minutes)
             VALUES
-                (:tenant_id, :origin_cell_id, :destination_id, :mode, :travel_time_minutes)
+                (:tenant_id, :origin_cell_id, :destination_id, :mode,
+                 :departure_time, :travel_time_minutes)
         """),
         batch,
     )

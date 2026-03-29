@@ -12,11 +12,6 @@ purpose_map:
   supermarket: retail
 
 impedance:
-  WALK:
-    jobs: 0.08
-    education: 0.06
-    health: 0.05
-    retail: 0.07
   TRANSIT:
     jobs: 0.03
     education: 0.025
@@ -26,16 +21,11 @@ impedance:
 diminishing:
   beta: 0.7
 
-max_travel_time: 60
+max_travel_time: 120
 
 combined_weights:
-  WALK:
-    jobs: 0.15
-    education: 0.10
-    health: 0.125
-    retail: 0.125
   TRANSIT:
-    jobs: 0.15
-    education: 0.10
-    health: 0.125
-    retail: 0.125
+    jobs: 0.30
+    education: 0.20
+    health: 0.25
+    retail: 0.25

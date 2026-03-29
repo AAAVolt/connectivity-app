@@ -7,7 +7,7 @@ const ConnectivityMap = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-full items-center justify-center text-muted-foreground">
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Loading map...
       </div>
     ),
@@ -16,7 +16,7 @@ const ConnectivityMap = dynamic(
 
 export default function MapPage() {
   return (
-    <div className="h-[calc(100vh-3.5rem)] relative">
+    <div className="h-full relative">
       <ConnectivityMap />
     </div>
   );
