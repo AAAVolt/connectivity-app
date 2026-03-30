@@ -268,6 +268,44 @@ def compute_scores(
 
 
 @app.command()
+def import_pois(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    pois_dir: Path = typer.Option(
+        "/data/pois", help="Directory containing POI CSV files"
+    ),
+    clear: bool = typer.Option(
+        False, "--clear", help="Delete existing destinations for each type before importing"
+    ),
+) -> None:
+    """Import custom POIs from CSV files in data/pois/.
+
+    Each CSV file becomes a destination type (filename = type code).
+    Required columns: name, lon, lat. Optional: weight (default 1.0).
+    """
+    from worker.pipeline.import_pois import import_pois_from_csv
+
+    session = get_session()
+    try:
+        results = import_pois_from_csv(
+            session, tenant, pois_dir, clear_existing=clear
+        )
+        if not results:
+            typer.echo("No CSV files found in " + str(pois_dir))
+            return
+        typer.echo("POI import results:")
+        total = 0
+        for type_code, count in sorted(results.items()):
+            typer.echo(f"  {type_code}: {count} destinations")
+            total += count
+        typer.echo(f"  Total: {total} destinations imported")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
 def import_geoeuskadi(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
 ) -> None:

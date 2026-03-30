@@ -89,9 +89,8 @@ const DEST_LAYERS = [
 
 // ── Zoom → grid resolution mapping ──
 function getResolution(zoom: number): number {
-  if (zoom < 9) return 1000;
-  if (zoom < 11) return 500;
-  return 100;
+  if (zoom < 11) return 1000;
+  return 500;
 }
 
 const RESOLUTION_LABELS: Record<number, string> = {
