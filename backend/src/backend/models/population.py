@@ -23,7 +23,8 @@ class PopulationSource(Base):
     population: Mapped[float] = mapped_column(
         Float, nullable=False, server_default=text("0")
     )
-    geom = mapped_column(Geometry("POLYGON", srid=4326), nullable=False)
+    geom = mapped_column(Geometry("MULTIPOLYGON", srid=4326), nullable=False)
+    source_code: Mapped[str | None] = mapped_column(String, nullable=True)
     extra: Mapped[dict] = mapped_column(
         "metadata", JSONB, server_default=text("'{}'::jsonb")
     )

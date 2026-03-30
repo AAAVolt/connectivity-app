@@ -51,23 +51,23 @@ INSERT INTO population_sources (tenant_id, name, population, geom) VALUES
     '00000000-0000-0000-0000-000000000001',
     'Casco Viejo',
     12000,
-    ST_SetSRID(ST_GeomFromText(
+    ST_Multi(ST_SetSRID(ST_GeomFromText(
         'POLYGON((-2.925 43.258, -2.925 43.263, -2.918 43.263, -2.918 43.258, -2.925 43.258))'
-    ), 4326)
+    ), 4326))
 ),
 (
     '00000000-0000-0000-0000-000000000001',
     'Abando',
     25000,
-    ST_SetSRID(ST_GeomFromText(
+    ST_Multi(ST_SetSRID(ST_GeomFromText(
         'POLYGON((-2.945 43.260, -2.945 43.268, -2.930 43.268, -2.930 43.260, -2.945 43.260))'
-    ), 4326)
+    ), 4326))
 ),
 (
     '00000000-0000-0000-0000-000000000001',
     'Deusto',
     18000,
-    ST_SetSRID(ST_GeomFromText(
+    ST_Multi(ST_SetSRID(ST_GeomFromText(
         'POLYGON((-2.960 43.270, -2.960 43.280, -2.940 43.280, -2.940 43.270, -2.960 43.270))'
-    ), 4326)
+    ), 4326))
 );

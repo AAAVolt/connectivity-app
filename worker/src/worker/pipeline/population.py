@@ -106,6 +106,11 @@ def disaggregate_population(
     # Areal weighting via PostGIS:
     #   For each (grid_cell, population_source) intersection,
     #   allocated = source_pop * (intersection_area / source_area)
+    #
+    # ST_MakeValid guards against invalid source geometries (e.g.
+    # self-intersections in imported shapefiles).  Without it, invalid
+    # geometries cause ST_Intersection to error or produce empty results,
+    # silently losing population.
     update_sql = text("""
         UPDATE grid_cells gc
         SET population = agg.pop
@@ -115,16 +120,19 @@ def disaggregate_population(
                 SUM(
                     ps.population
                     * ST_Area(
-                        ST_Transform(ST_Intersection(gc2.geom, ps.geom), :proj_srid)
+                        ST_Transform(
+                            ST_Intersection(gc2.geom, ST_MakeValid(ps.geom)),
+                            :proj_srid
+                        )
                       )
                     / NULLIF(
-                        ST_Area(ST_Transform(ps.geom, :proj_srid)),
+                        ST_Area(ST_Transform(ST_MakeValid(ps.geom), :proj_srid)),
                         0
                       )
                 ) AS pop
             FROM grid_cells gc2
             JOIN population_sources ps
-                ON ST_Intersects(gc2.geom, ps.geom)
+                ON ST_Intersects(gc2.geom, ST_MakeValid(ps.geom))
                AND gc2.tenant_id = ps.tenant_id
             WHERE gc2.tenant_id = :tid
             GROUP BY gc2.id
@@ -153,13 +161,28 @@ def disaggregate_population(
 
     session.commit()
 
+    allocated = float(stats_row.total_pop)
+    source = float(total_source_pop)
+
     stats = {
-        "source_population": float(total_source_pop),
-        "allocated_population": float(stats_row.total_pop),
+        "source_population": source,
+        "allocated_population": allocated,
         "cells_with_population": int(stats_row.cells_with_pop),
         "total_cells": int(stats_row.total_cells),
         "cells_updated": cells_updated,
     }
+
+    # Warn if totals diverge by more than 0.1%
+    if source > 0:
+        loss_pct = abs(source - allocated) / source * 100
+        stats["loss_pct"] = round(loss_pct, 4)
+        if loss_pct > 0.1:
+            log.warning(
+                "population_conservation_warning",
+                source=source,
+                allocated=allocated,
+                loss_pct=round(loss_pct, 2),
+            )
 
     log.info("population_disaggregation_complete", **stats)
     return stats

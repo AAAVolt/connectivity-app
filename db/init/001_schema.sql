@@ -86,13 +86,14 @@ CREATE INDEX idx_grid_cells_geom   ON grid_cells USING GIST (geom);
 CREATE INDEX idx_grid_cells_tenant ON grid_cells (tenant_id);
 CREATE INDEX idx_grid_cells_muni   ON grid_cells (tenant_id, muni_code);
 
--- Population source polygons (núcleos, census tracts, etc.)
+-- Population source polygons (census sections, núcleos, etc.)
 CREATE TABLE population_sources (
     id          BIGSERIAL PRIMARY KEY,
     tenant_id   UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     name        TEXT,
     population  REAL NOT NULL DEFAULT 0,
-    geom        GEOMETRY(Polygon, 4326) NOT NULL,
+    geom        GEOMETRY(MultiPolygon, 4326) NOT NULL,
+    source_code TEXT,
     metadata    JSONB NOT NULL DEFAULT '{}'
 );
 

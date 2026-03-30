@@ -306,6 +306,56 @@ def import_pois(
 
 
 @app.command()
+def import_population(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    shp_path: Path = typer.Option(
+        "/data/raw/secciones/SECCIONES_EUSTAT_5000_ETRS89.shp",
+        help="Path to EUSTAT secciones shapefile (.shp)",
+    ),
+    csv_path: Path = typer.Option(
+        "/data/raw/population/bizkaia_population_sections.csv",
+        help="Path to EUSTAT population CSV",
+    ),
+    no_clear: bool = typer.Option(
+        False, "--no-clear", help="Keep existing population sources"
+    ),
+) -> None:
+    """Import EUSTAT census sections as population sources.
+
+    Reads the secciones censales shapefile and population CSV, joins
+    them by section code, and inserts into population_sources.
+    Then runs disaggregation to distribute to grid cells.
+    """
+    from worker.pipeline.import_population import import_secciones
+
+    session = get_session()
+    try:
+        typer.echo("Importing census sections...")
+        stats = import_secciones(
+            session, tenant, shp_path, csv_path,
+            clear_existing=not no_clear,
+        )
+        typer.echo(f"  CSV sections:     {stats['csv_sections']}")
+        typer.echo(f"  SHP sections:     {stats['shp_sections']}")
+        typer.echo(f"  Matched:          {stats['matched']}")
+        typer.echo(f"  Unmatched CSV:    {stats['unmatched_csv']}")
+        typer.echo(f"  CSV population:   {stats['csv_total_population']:,.0f}")
+        typer.echo(f"  DB population:    {stats['db_total_population']:,.0f}")
+        typer.echo(f"  Loss:             {stats['loss_pct']:.4f}%")
+
+        if stats["loss_pct"] > 0.1:
+            typer.echo(
+                "WARNING: Population loss exceeds 0.1%!",
+                err=True,
+            )
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
 def import_geoeuskadi(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
 ) -> None:
