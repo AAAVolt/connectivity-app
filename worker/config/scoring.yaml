@@ -5,27 +5,47 @@
 # diminishing:  concave transform exponent (0 < beta < 1)
 # combined_weights: must sum to 1.0 across all (mode, purpose) pairs
 
+# Identity mapping – each POI type is its own purpose bucket
 purpose_map:
-  jobs: jobs
-  school_primary: education
-  health_gp: health
-  supermarket: retail
+  aeropuerto: aeropuerto
+  bachiller: bachiller
+  centro_educativo: centro_educativo
+  centro_urbano: centro_urbano
+  consulta_general: consulta_general
+  hacienda: hacienda
+  hospital: hospital
+  osakidetza: osakidetza
+  residencia: residencia
+  universidad: universidad
 
 impedance:
   TRANSIT:
-    jobs: 0.03
-    education: 0.025
-    health: 0.02
-    retail: 0.03
+    aeropuerto: 0.03
+    bachiller: 0.03
+    centro_educativo: 0.03
+    centro_urbano: 0.03
+    consulta_general: 0.03
+    hacienda: 0.03
+    hospital: 0.03
+    osakidetza: 0.03
+    residencia: 0.03
+    universidad: 0.03
 
 diminishing:
   beta: 0.7
 
 max_travel_time: 120
 
+# Equal weights across all 10 POI types (0.10 each, sum = 1.0)
 combined_weights:
   TRANSIT:
-    jobs: 0.30
-    education: 0.20
-    health: 0.25
-    retail: 0.25
+    aeropuerto: 0.10
+    bachiller: 0.10
+    centro_educativo: 0.10
+    centro_urbano: 0.10
+    consulta_general: 0.10
+    hacienda: 0.10
+    hospital: 0.10
+    osakidetza: 0.10
+    residencia: 0.10
+    universidad: 0.10

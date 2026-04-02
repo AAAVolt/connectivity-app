@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, PanelLeftClose, PanelLeft } from "lucide-react";
 import type { Map as MaplibreMap } from "maplibre-gl";
+import { useTranslation } from "@/lib/i18n";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const DEMO_TENANT = "00000000-0000-0000-0000-000000000001";
@@ -20,11 +21,17 @@ const DEFAULT_TIME_INDEX = 16; // 08:00
 
 // ── POI types (primary filter) ──
 const POI_TYPES = [
-  { value: null, label: "Combined", desc: "All destination types" },
-  { value: "jobs", label: "Jobs", desc: "Employment zones", color: "#6366f1" },
-  { value: "education", label: "Education", desc: "Schools", color: "#f59e0b" },
-  { value: "health", label: "Health", desc: "Health centres & pharmacies", color: "#ef4444" },
-  { value: "retail", label: "Retail", desc: "Supermarkets & shops", color: "#22c55e" },
+  { value: null, label: "Combined", descKey: "map.allDestTypes" },
+  { value: "aeropuerto", label: "Aeropuerto", descKey: "poi.aeropuerto", color: "#6366f1" },
+  { value: "bachiller", label: "Bachiller", descKey: "poi.bachiller", color: "#f59e0b" },
+  { value: "centro_educativo", label: "Centro Educativo", descKey: "poi.centro_educativo", color: "#eab308" },
+  { value: "centro_urbano", label: "Centro Urbano", descKey: "poi.centro_urbano", color: "#8b5cf6" },
+  { value: "consulta_general", label: "Consulta General", descKey: "poi.consulta_general", color: "#ef4444" },
+  { value: "hacienda", label: "Hacienda", descKey: "poi.hacienda", color: "#64748b" },
+  { value: "hospital", label: "Hospital", descKey: "poi.hospital", color: "#dc2626" },
+  { value: "osakidetza", label: "Osakidetza", descKey: "poi.osakidetza", color: "#f97316" },
+  { value: "residencia", label: "Residencia", descKey: "poi.residencia", color: "#14b8a6" },
+  { value: "universidad", label: "Universidad", descKey: "poi.universidad", color: "#22c55e" },
 ] as const;
 
 // ── Metrics ──
@@ -81,23 +88,62 @@ const OPERATORS = [
 
 // ── Destination marker styles ──
 const DEST_LAYERS = [
-  { id: "dest-schools", type: "school_primary", color: "#f59e0b", label: "Schools" },
-  { id: "dest-health", type: "health_gp", color: "#ef4444", label: "Health" },
-  { id: "dest-supermarkets", type: "supermarket", color: "#22c55e", label: "Supermarkets" },
-  { id: "dest-jobs", type: "jobs", color: "#6366f1", label: "Jobs" },
+  { id: "dest-aeropuerto", type: "aeropuerto", color: "#6366f1", label: "Aeropuerto" },
+  { id: "dest-bachiller", type: "bachiller", color: "#f59e0b", label: "Bachiller" },
+  { id: "dest-centro-educativo", type: "centro_educativo", color: "#eab308", label: "Centro Educativo" },
+  { id: "dest-centro-urbano", type: "centro_urbano", color: "#8b5cf6", label: "Centro Urbano" },
+  { id: "dest-consulta-general", type: "consulta_general", color: "#ef4444", label: "Consulta General" },
+  { id: "dest-hacienda", type: "hacienda", color: "#64748b", label: "Hacienda" },
+  { id: "dest-hospital", type: "hospital", color: "#dc2626", label: "Hospital" },
+  { id: "dest-osakidetza", type: "osakidetza", color: "#f97316", label: "Osakidetza" },
+  { id: "dest-residencia", type: "residencia", color: "#14b8a6", label: "Residencia" },
+  { id: "dest-universidad", type: "universidad", color: "#22c55e", label: "Universidad" },
 ];
 
 // ── Zoom → grid resolution mapping ──
 function getResolution(zoom: number): number {
-  if (zoom < 11) return 1000;
-  return 500;
+  if (zoom < 9.5) return 1000;
+  if (zoom < 11) return 500;
+  if (zoom < 12.5) return 200;
+  return 100;
 }
 
 const RESOLUTION_LABELS: Record<number, string> = {
   100: "100 m",
+  200: "200 m",
   500: "500 m",
   1000: "1 km",
 };
+
+/** Create a small diagonal-stripe image for the "no population" hatch overlay. */
+function createHatchPattern(): { width: number; height: number; data: Uint8Array } {
+  const size = 10;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  ctx.clearRect(0, 0, size, size);
+
+  // Light grey background so unpopulated cells are clearly distinguishable
+  ctx.fillStyle = "rgba(180, 180, 180, 0.45)";
+  ctx.fillRect(0, 0, size, size);
+
+  // Diagonal line (bottom-left → top-right), repeated via tiling
+  ctx.strokeStyle = "rgba(80, 80, 80, 0.6)";
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(0, size);
+  ctx.lineTo(size, 0);
+  ctx.moveTo(-size, size);
+  ctx.lineTo(size, -size);
+  ctx.moveTo(0, size * 2);
+  ctx.lineTo(size * 2, 0);
+  ctx.stroke();
+
+  const imgData = ctx.getImageData(0, 0, size, size);
+  return { width: size, height: size, data: new Uint8Array(imgData.data.buffer) };
+}
 
 interface CellProperties {
   id?: number;
@@ -129,17 +175,20 @@ type MapInstance = {
 };
 
 const BASE_LAYER_MAPPING: Record<string, string[]> = {
-  cells: ["cells-fill", "cells-outline"],
+  cells: ["cells-fill", "cells-hatch", "cells-outline"],
   region: ["region-boundary"],
-  comarcas: ["comarcas-boundary", "comarcas-labels"],
+  comarcas: ["comarcas-boundary"],
   municipalities: ["municipalities-boundary"],
+  nucleos: ["nucleos-fill", "nucleos-outline"],
+  labels: ["comarcas-labels", "municipalities-labels"],
 };
 
 export default function ConnectivityMap() {
+  const { t } = useTranslation();
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapInstance | null>(null);
   const [selectedCell, setSelectedCell] = useState<CellProperties | null>(null);
-  const [status, setStatus] = useState("Initializing map...");
+  const [status, setStatus] = useState("map.initializingMap");
   const [error, setError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
@@ -149,12 +198,14 @@ export default function ConnectivityMap() {
   const [availableTimes, setAvailableTimes] = useState<string[]>(TIME_SLOTS);
   const [resolution, setResolution] = useState(getResolution(DEFAULT_ZOOM));
 
-  // Base layers
-  const [baseLayers, setBaseLayers] = useState<LayerToggle[]>([
-    { id: "cells", label: "Accessibility Grid", visible: true },
-    { id: "region", label: "Bizkaia Boundary", visible: true },
-    { id: "comarcas", label: "Comarcas", visible: false },
-    { id: "municipalities", label: "Municipalities", visible: false },
+  // Base layers — labelKey is the i18n key
+  const [baseLayers, setBaseLayers] = useState<(LayerToggle & { labelKey: string })[]>([
+    { id: "cells", label: "", labelKey: "map.accessibilityGrid", visible: true },
+    { id: "region", label: "", labelKey: "map.bizkaiaBoundary", visible: true },
+    { id: "comarcas", label: "", labelKey: "map.comarcas", visible: false },
+    { id: "municipalities", label: "", labelKey: "map.municipalities", visible: false },
+    { id: "nucleos", label: "", labelKey: "map.nucleos", visible: false },
+    { id: "labels", label: "", labelKey: "map.labels", visible: false },
   ]);
 
   // Per-POI-type destination toggles
@@ -168,6 +219,7 @@ export default function ConnectivityMap() {
   );
   const [showRoutes, setShowRoutes] = useState(false);
   const [showStops, setShowStops] = useState(false);
+  const [fillOpacity, setFillOpacity] = useState(0.7);
 
   // Panel collapse
   const [panelOpen, setPanelOpen] = useState(true);
@@ -356,12 +408,27 @@ export default function ConnectivityMap() {
 
     // Adjust outline width – thicker for coarse grids, still visible for 100 m
     if (map.getLayer("cells-outline")) {
-      const width = resolution >= 1000 ? 1.5 : resolution >= 500 ? 0.8 : 0.3;
+      const width = resolution >= 1000 ? 1.5 : resolution >= 500 ? 0.8 : resolution >= 200 ? 0.5 : 0.3;
       mlMap.setPaintProperty("cells-outline", "line-width", width);
     }
 
     return () => controller.abort();
   }, [selectedPurpose, metric, departureTime, resolution, mapReady]);
+
+  // ── Opacity sync ──
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const set = (layer: string, prop: string, val: number) => {
+      if (map.getLayer(layer)) {
+        (map as unknown as { setPaintProperty: (l: string, p: string, v: number) => void })
+          .setPaintProperty(layer, prop, val);
+      }
+    };
+    set("cells-fill", "fill-opacity", fillOpacity);
+    set("cells-hatch", "fill-opacity", fillOpacity);
+    set("cells-outline", "line-opacity", fillOpacity);
+  }, [fillOpacity, mapReady]);
 
   // ── Map initialisation ──
   useEffect(() => {
@@ -372,12 +439,13 @@ export default function ConnectivityMap() {
       try {
         const maplibregl = await import("maplibre-gl");
         if (cancelled) return;
-        setStatus("Creating map...");
+        setStatus("map.creatingMap");
 
         const map = new maplibregl.Map({
           container: mapContainer.current!,
           style: {
             version: 8 as const,
+            glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
             sources: {
               osm: {
                 type: "raster" as const,
@@ -421,13 +489,25 @@ export default function ConnectivityMap() {
                 "fill-opacity": 0.7,
               },
             });
+
+            // Diagonal hatch overlay for zero-population cells
+            map.addImage("hatch-pattern", createHatchPattern(), { pixelRatio: 2 });
+            map.addLayer({
+              id: "cells-hatch", type: "fill", source: "cells",
+              filter: ["<=", ["coalesce", ["get", "population"], 0], 0],
+              paint: {
+                "fill-pattern": "hatch-pattern",
+                "fill-opacity": 0.85,
+              },
+            });
+
             map.addLayer({
               id: "cells-outline", type: "line", source: "cells",
               paint: { "line-color": "#555", "line-width": 0.15 },
             });
 
             // 2. Region
-            setStatus("Loading layers...");
+            setStatus("map.loadingLayers");
             await addGeoJsonLayer(map, `${API_BASE}/boundaries/region/geojson`,
               "region", "region-boundary", "line",
               { "line-color": "#1e293b", "line-width": 3 });
@@ -441,20 +521,71 @@ export default function ConnectivityMap() {
               map.addLayer({
                 id: "comarcas-labels", type: "symbol", source: "comarcas",
                 layout: {
-                  visibility: "none", "text-field": ["get", "name"],
-                  "text-size": 11, "text-anchor": "center",
+                  visibility: "none",
+                  "text-field": ["get", "name"],
+                  "text-size": ["interpolate", ["linear"], ["zoom"], 9, 12, 13, 15],
+                  "text-anchor": "center",
+                  "text-letter-spacing": 0.05,
+                  "text-allow-overlap": true,
+                  "text-ignore-placement": true,
                 },
-                paint: { "text-color": "#7c3aed", "text-halo-color": "#fff", "text-halo-width": 2 },
+                paint: {
+                  "text-color": "#5b21b6",
+                  "text-halo-color": "#fff",
+                  "text-halo-width": 2,
+                },
               });
             }
 
             // 4. Municipalities
             await addGeoJsonLayer(map, `${API_BASE}/boundaries/municipalities/geojson`,
               "municipalities", "municipalities-boundary", "line",
-              { "line-color": "#94a3b8", "line-width": 0.8 }, "none");
+              { "line-color": "#0e7490", "line-width": 1.2 }, "none");
+            if (map.getSource("municipalities")) {
+              map.addLayer({
+                id: "municipalities-labels", type: "symbol", source: "municipalities",
+                layout: {
+                  visibility: "none",
+                  "text-field": ["get", "name"],
+                  "text-size": ["interpolate", ["linear"], ["zoom"], 9, 8, 12, 11, 15, 14],
+                  "text-anchor": "center",
+                },
+                paint: {
+                  "text-color": "#0e7490",
+                  "text-halo-color": "#fff",
+                  "text-halo-width": 1.5,
+                },
+              });
+            }
 
-            // 5. Destinations
-            setStatus("Loading destinations...");
+            // 5. Núcleos (settlement boundaries)
+            try {
+              const nucleosRes = await fetch(`${API_BASE}/boundaries/nucleos/geojson`, {
+                headers: { "X-Tenant-ID": DEMO_TENANT },
+              });
+              if (nucleosRes.ok) {
+                map.addSource("nucleos", { type: "geojson", data: await nucleosRes.json() });
+                map.addLayer({
+                  id: "nucleos-fill", type: "fill", source: "nucleos",
+                  layout: { visibility: "none" },
+                  paint: {
+                    "fill-color": "#f59e0b",
+                    "fill-opacity": 0.15,
+                  },
+                });
+                map.addLayer({
+                  id: "nucleos-outline", type: "line", source: "nucleos",
+                  layout: { visibility: "none" },
+                  paint: {
+                    "line-color": "#d97706",
+                    "line-width": 1.5,
+                  },
+                });
+              }
+            } catch { /* optional */ }
+
+            // 6. Destinations
+            setStatus("map.loadingDestinations");
             try {
               const destRes = await fetch(`${API_BASE}/destinations/geojson`, {
                 headers: { "X-Tenant-ID": DEMO_TENANT },
@@ -475,8 +606,8 @@ export default function ConnectivityMap() {
               }
             } catch { /* optional */ }
 
-            // 6. Transit routes (all operators, filtered client-side)
-            setStatus("Loading transit network...");
+            // 7. Transit routes (all operators, filtered client-side)
+            setStatus("map.loadingTransit");
             try {
               const routesRes = await fetch(`${API_BASE}/transit/routes`);
               if (routesRes.ok) {
@@ -495,13 +626,14 @@ export default function ConnectivityMap() {
                   layout: { visibility: "none" },
                   paint: {
                     "line-color": colorExpr as maplibregl.ExpressionSpecification,
-                    "line-width": 2, "line-opacity": 0.75,
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1.5, 12, 3, 15, 6],
+                    "line-opacity": ["interpolate", ["linear"], ["zoom"], 9, 0.6, 13, 0.9],
                   },
                 });
               }
             } catch { /* optional */ }
 
-            // 7. Transit stops (all operators, filtered client-side)
+            // 8. Transit stops (all operators, filtered client-side)
             try {
               const stopsRes = await fetch(`${API_BASE}/transit/stops`);
               if (stopsRes.ok) {
@@ -517,9 +649,10 @@ export default function ConnectivityMap() {
                   id: "transit-stops", type: "circle", source: "transit-stops",
                   layout: { visibility: "none" },
                   paint: {
-                    "circle-radius": 3,
+                    "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 2, 12, 4, 15, 8],
                     "circle-color": stopColorExpr as maplibregl.ExpressionSpecification,
-                    "circle-stroke-color": "#fff", "circle-stroke-width": 0.5,
+                    "circle-stroke-color": "#fff",
+                    "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 9, 0.3, 13, 1],
                   },
                 });
               }
@@ -570,7 +703,15 @@ export default function ConnectivityMap() {
             .addTo(map);
         });
 
-        const clickable = ["cells-fill", "transit-stops", "transit-routes", "municipalities-boundary", ...DEST_LAYERS.map((d) => d.id)];
+        map.on("click", "nucleos-fill", (e) => {
+          if (!e.features?.[0]) return;
+          const p = e.features[0].properties;
+          new maplibregl.Popup().setLngLat(e.lngLat)
+            .setHTML(`<strong>${p?.name ?? ""}</strong><br/><span style="color:#666;font-size:12px">${p?.muni_name ?? ""}</span>`)
+            .addTo(map);
+        });
+
+        const clickable = ["cells-fill", "transit-stops", "transit-routes", "municipalities-boundary", "nucleos-fill", ...DEST_LAYERS.map((d) => d.id)];
         for (const lid of clickable) {
           map.on("mouseenter", lid, () => { map.getCanvas().style.cursor = "pointer"; });
           map.on("mouseleave", lid, () => { map.getCanvas().style.cursor = ""; });
@@ -599,11 +740,11 @@ export default function ConnectivityMap() {
 
   const timePeriod = (() => {
     const h = parseInt(departureTime.split(":")[0], 10);
-    if (h >= 7 && h <= 9) return "AM peak";
-    if (h >= 17 && h <= 19) return "PM peak";
-    if (h >= 10 && h <= 16) return "Midday";
-    if (h >= 20 && h <= 22) return "Evening";
-    return "Night";
+    if (h >= 7 && h <= 9) return t("map.amPeak");
+    if (h >= 17 && h <= 19) return t("map.pmPeak");
+    if (h >= 10 && h <= 16) return t("map.midday");
+    if (h >= 20 && h <= 22) return t("map.evening");
+    return t("map.night");
   })();
 
   return (
@@ -615,7 +756,7 @@ export default function ConnectivityMap() {
         <button
           onClick={() => setPanelOpen(true)}
           className="absolute top-2 left-2 z-10 h-8 w-8 flex items-center justify-center rounded-md bg-background/90 backdrop-blur-sm border shadow-md text-muted-foreground hover:text-foreground transition-colors"
-          title="Open panel"
+          title={t("map.openPanel")}
         >
           <PanelLeft className="h-4 w-4" />
         </button>
@@ -629,11 +770,11 @@ export default function ConnectivityMap() {
       >
         {/* Panel header */}
         <div className="flex items-center justify-between px-3 h-10 border-b border-border/60 flex-shrink-0">
-          <span className="text-xs font-semibold tracking-wide text-foreground">Controls</span>
+          <span className="text-xs font-semibold tracking-wide text-foreground">{t("map.controls")}</span>
           <button
             onClick={() => setPanelOpen(false)}
             className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            title="Collapse panel"
+            title={t("map.collapsePanel")}
           >
             <PanelLeftClose className="h-3.5 w-3.5" />
           </button>
@@ -642,7 +783,7 @@ export default function ConnectivityMap() {
         <div className="flex-1 overflow-y-auto">
 
           {/* Metric */}
-          <Section title="Metric" open={openSections.metric} onToggle={() => toggleSection("metric")}>
+          <Section title={t("map.metric")} open={openSections.metric} onToggle={() => toggleSection("metric")}>
             <div className="flex gap-1">
               {(["score", "travel_time"] as const).map((m) => (
                 <button
@@ -654,14 +795,14 @@ export default function ConnectivityMap() {
                       : "bg-secondary/50 text-secondary-foreground hover:bg-secondary"
                   }`}
                 >
-                  {m === "score" ? "Score" : "Travel time"}
+                  {m === "score" ? t("map.metricScore") : t("map.metricTravelTime")}
                 </button>
               ))}
             </div>
           </Section>
 
           {/* Departure Time */}
-          <Section title="Departure Time" open={openSections.time} onToggle={() => toggleSection("time")}>
+          <Section title={t("map.departureTime")} open={openSections.time} onToggle={() => toggleSection("time")}>
             <div className="flex items-center gap-2">
               <span className="text-lg font-mono font-semibold tabular-nums min-w-[3.5rem]">
                 {departureTime}
@@ -685,7 +826,7 @@ export default function ConnectivityMap() {
 
           {/* Destination filter + legend */}
           <Section
-            title={metric === "travel_time" ? "Nearest Destination" : "Accessibility"}
+            title={metric === "travel_time" ? t("map.nearestDestination") : t("map.accessibility")}
             open={openSections.destination}
             onToggle={() => toggleSection("destination")}
           >
@@ -706,7 +847,7 @@ export default function ConnectivityMap() {
                       style={{ backgroundColor: (p as { color: string }).color }}
                     />
                   )}
-                  <span className="font-medium">{p.label}</span>
+                  <span className="font-medium">{p.value === null ? t("map.combined") : p.label}</span>
                 </button>
               ))}
             </div>
@@ -716,10 +857,10 @@ export default function ConnectivityMap() {
               <p className="text-[10px] text-muted-foreground mb-1.5">
                 {metric === "travel_time"
                   ? selectedPurpose
-                    ? `Minutes to nearest ${activePoi?.label?.toLowerCase() ?? "destination"} (transit)`
-                    : "Average minutes to nearest destination"
-                  : (activePoi?.desc ?? "Weighted average of all destination types") +
-                    (selectedPurpose ? " (public transport)" : "")}
+                    ? `${t("map.minutesToNearest")} ${activePoi?.label?.toLowerCase() ?? "destination"} ${t("map.transit")}`
+                    : t("map.avgMinToNearest")
+                  : (activePoi ? t(activePoi.descKey) : t("map.weightedAvgAll")) +
+                    (selectedPurpose ? ` ${t("map.publicTransport")}` : "")}
               </p>
               {metric === "travel_time" ? (
                 <div className="space-y-0.5">
@@ -742,20 +883,30 @@ export default function ConnectivityMap() {
                 </div>
               ) : (
                 <div className="flex items-center gap-1">
-                  <span className="text-[10px] text-muted-foreground">Low</span>
+                  <span className="text-[10px] text-muted-foreground">{t("map.low")}</span>
                   <div className="flex h-3 flex-1 rounded-sm overflow-hidden">
                     {SCORE_COLORS.map(([, color]) => (
                       <div key={color} className="flex-1" style={{ backgroundColor: color }} />
                     ))}
                   </div>
-                  <span className="text-[10px] text-muted-foreground">High</span>
+                  <span className="text-[10px] text-muted-foreground">{t("map.high")}</span>
                 </div>
               )}
+              {/* No-population hatch legend */}
+              <div className="flex items-center gap-1.5 mt-1.5">
+                <span
+                  className="inline-block w-3 h-3 rounded-sm flex-shrink-0 border border-border/60"
+                  style={{
+                    background: "repeating-linear-gradient(-45deg, transparent, transparent 2px, rgba(120,120,120,0.45) 2px, rgba(120,120,120,0.45) 3px)",
+                  }}
+                />
+                <span className="text-[10px] text-muted-foreground">{t("map.noPopulation")}</span>
+              </div>
             </div>
           </Section>
 
           {/* Layers */}
-          <Section title="Layers" open={openSections.layers} onToggle={() => toggleSection("layers")}>
+          <Section title={t("map.layers")} open={openSections.layers} onToggle={() => toggleSection("layers")}>
             {baseLayers.map((layer) => (
               <label key={layer.id} className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
                 <input
@@ -764,13 +915,29 @@ export default function ConnectivityMap() {
                   onChange={() => toggleBaseLayer(layer.id)}
                   className="rounded border-input"
                 />
-                {layer.label}
+                {t(layer.labelKey)}
               </label>
             ))}
+            <div className="mt-3 pt-3 border-t">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs text-muted-foreground">{t("map.gridOpacity")}</span>
+                <span className="text-xs font-mono text-muted-foreground w-8 text-right">
+                  {Math.round(fillOpacity * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={5}
+                max={100}
+                value={Math.round(fillOpacity * 100)}
+                onChange={(e) => setFillOpacity(Number(e.target.value) / 100)}
+                className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+              />
+            </div>
           </Section>
 
           {/* Destination markers */}
-          <Section title="Destinations" open={openSections.destinations} onToggle={() => toggleSection("destinations")}>
+          <Section title={t("map.destinations")} open={openSections.destinations} onToggle={() => toggleSection("destinations")}>
             {destToggles.map((dt) => (
               <label key={dt.id} className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
                 <input
@@ -789,7 +956,7 @@ export default function ConnectivityMap() {
           </Section>
 
           {/* Public Transport */}
-          <Section title="Public Transport" open={openSections.transit} onToggle={() => toggleSection("transit")}>
+          <Section title={t("map.publicTransportSection")} open={openSections.transit} onToggle={() => toggleSection("transit")}>
             {/* Global Routes / Stops toggle */}
             <div className="flex gap-1 mb-2.5">
               <button
@@ -800,7 +967,7 @@ export default function ConnectivityMap() {
                     : "bg-secondary/50 text-secondary-foreground hover:bg-secondary"
                 }`}
               >
-                Routes
+                {t("map.routes")}
               </button>
               <button
                 onClick={handleToggleStops}
@@ -810,7 +977,7 @@ export default function ConnectivityMap() {
                     : "bg-secondary/50 text-secondary-foreground hover:bg-secondary"
                 }`}
               >
-                Stops
+                {t("map.stops")}
               </button>
             </div>
 
@@ -846,7 +1013,7 @@ export default function ConnectivityMap() {
       {/* Status / Error */}
       {status && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 rounded-md bg-background/90 px-4 py-2 text-sm text-muted-foreground shadow">
-          {status}
+          {t(status)}
         </div>
       )}
       {error && (
@@ -859,24 +1026,24 @@ export default function ConnectivityMap() {
       {selectedCell && (
         <div className="absolute bottom-4 right-4 z-10 w-64 rounded-lg border bg-background p-4 shadow-lg">
           <div className="flex items-start justify-between">
-            <h3 className="font-semibold text-sm">Cell Details</h3>
+            <h3 className="font-semibold text-sm">{t("map.cellDetails")}</h3>
             <button
               onClick={() => setSelectedCell(null)}
               className="text-muted-foreground hover:text-foreground text-xs"
             >
-              Close
+              {t("map.close")}
             </button>
           </div>
           <div className="mt-3 space-y-1.5 text-sm">
-            <Row label="Code" value={selectedCell.cell_code} />
-            {selectedCell.id != null && <Row label="ID" value={String(selectedCell.id)} />}
-            <Row label="Resolution" value={RESOLUTION_LABELS[resolution] ?? `${resolution} m`} />
-            <Row label="Population" value={Number(selectedCell.population).toFixed(0)} />
+            <Row label={t("map.code")} value={selectedCell.cell_code} />
+            {selectedCell.id != null && <Row label={t("map.id")} value={String(selectedCell.id)} />}
+            <Row label={t("map.resolution")} value={RESOLUTION_LABELS[resolution] ?? `${resolution} m`} />
+            <Row label={t("map.population")} value={Number(selectedCell.population).toFixed(0)} />
             <Row
               label={
                 metric === "travel_time"
                   ? `${activePoi?.label ?? "Avg"} (min)`
-                  : activePoi?.label ?? "Combined"
+                  : activePoi?.label ?? t("map.combined")
               }
               value={
                 selectedCell.score != null

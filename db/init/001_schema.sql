@@ -124,9 +124,9 @@ CREATE TABLE travel_times (
     origin_cell_id      BIGINT NOT NULL REFERENCES grid_cells(id) ON DELETE CASCADE,
     destination_id      BIGINT NOT NULL REFERENCES destinations(id) ON DELETE CASCADE,
     mode                TEXT NOT NULL,
-    departure_time      TIMESTAMPTZ,
+    departure_time      TEXT NOT NULL DEFAULT '08:00',
     travel_time_minutes REAL NOT NULL,
-    UNIQUE (tenant_id, origin_cell_id, destination_id, mode)
+    UNIQUE (tenant_id, origin_cell_id, destination_id, mode, departure_time)
 );
 
 CREATE INDEX idx_travel_times_origin ON travel_times (tenant_id, origin_cell_id, mode);
@@ -141,8 +141,9 @@ CREATE TABLE connectivity_scores (
     purpose             TEXT NOT NULL,
     score               REAL NOT NULL,
     score_normalized    REAL,
+    departure_time      TEXT NOT NULL DEFAULT '08:00',
     computed_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, cell_id, mode, purpose)
+    UNIQUE (tenant_id, cell_id, mode, purpose, departure_time)
 );
 
 CREATE INDEX idx_scores_cell         ON connectivity_scores (tenant_id, cell_id);
@@ -156,8 +157,9 @@ CREATE TABLE combined_scores (
     combined_score              REAL NOT NULL,
     combined_score_normalized   REAL,
     weights                     JSONB NOT NULL DEFAULT '{}',
+    departure_time              TEXT NOT NULL DEFAULT '08:00',
     computed_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, cell_id)
+    UNIQUE (tenant_id, cell_id, departure_time)
 );
 
 CREATE INDEX idx_combined_scores_cell ON combined_scores (tenant_id, cell_id);

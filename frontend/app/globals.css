@@ -49,6 +49,22 @@
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
   }
+
+  /* Chart CSS variables for recharts/shadcn chart theming */
+  :root {
+    --chart-1: 221 83% 53%;
+    --chart-2: 142 71% 45%;
+    --chart-3: 47 96% 53%;
+    --chart-4: 262 83% 58%;
+    --chart-5: 0 84% 60%;
+  }
+  .dark {
+    --chart-1: 217 91% 60%;
+    --chart-2: 142 71% 45%;
+    --chart-3: 47 96% 53%;
+    --chart-4: 262 83% 58%;
+    --chart-5: 0 84% 60%;
+  }
 }
 
 @layer base {

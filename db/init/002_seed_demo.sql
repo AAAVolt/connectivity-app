@@ -7,12 +7,18 @@ INSERT INTO modes (code, label) VALUES
     ('TRANSIT', 'Public Transport')
 ON CONFLICT (code) DO NOTHING;
 
--- Destination / purpose types (global lookup)
+-- Destination / purpose types (from all_pois.csv POI categories)
 INSERT INTO destination_types (code, label, description) VALUES
-    ('jobs',            'Jobs',             'Employment locations'),
-    ('school_primary',  'Primary Schools',  'Primary education facilities'),
-    ('health_gp',       'GP / Health',      'General practitioner and health centres'),
-    ('supermarket',     'Supermarkets',     'Grocery stores and supermarkets')
+    ('aeropuerto',       'Aeropuerto',       'Airports'),
+    ('bachiller',        'Bachiller',        'Secondary / vocational schools (BHI)'),
+    ('centro_educativo', 'Centro Educativo', 'Education centres'),
+    ('centro_urbano',    'Centro Urbano',    'Urban centres'),
+    ('consulta_general', 'Consulta General', 'GP / general health consultations'),
+    ('hacienda',         'Hacienda',         'Government tax / finance offices'),
+    ('hospital',         'Hospital',         'Hospitals'),
+    ('osakidetza',       'Osakidetza',       'Osakidetza health service locations'),
+    ('residencia',       'Residencia',       'Residential care facilities'),
+    ('universidad',      'Universidad',      'Universities')
 ON CONFLICT (code) DO NOTHING;
 
 -- ============================================================

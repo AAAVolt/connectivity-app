@@ -18,19 +18,12 @@ router = APIRouter(prefix="/cells", tags=["cells"])
 
 _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 DEFAULT_DEPARTURE_TIME = "08:00"
-ALLOWED_RESOLUTIONS = (100, 500, 1000)
+ALLOWED_RESOLUTIONS = (100, 200, 500, 1000)
 
 
 class TransportMode(str, Enum):
     WALK = "WALK"
     TRANSIT = "TRANSIT"
-
-
-class Purpose(str, Enum):
-    jobs = "jobs"
-    education = "education"
-    health = "health"
-    retail = "retail"
 
 
 class Metric(str, Enum):
@@ -61,7 +54,7 @@ def _validate_departure_time(dep: str) -> str:
 
 def _build_base_query(
     mode: TransportMode | None,
-    purpose: Purpose | None,
+    purpose: str | None,
     metric: Metric,
     params: dict[str, object],
 ) -> str:
@@ -73,7 +66,7 @@ def _build_base_query(
     """
     if metric == Metric.travel_time and mode is not None and purpose is not None:
         params["mode"] = mode.value
-        params["purpose"] = purpose.value
+        params["purpose"] = purpose
         return """
             SELECT gc.id, gc.cell_code, gc.population,
                    mt.min_travel_time_minutes AS score, gc.geom
@@ -86,7 +79,7 @@ def _build_base_query(
         """
 
     if metric == Metric.travel_time and purpose is not None:
-        params["purpose"] = purpose.value
+        params["purpose"] = purpose
         return """
             SELECT gc.id, gc.cell_code, gc.population,
                    MIN(mt.min_travel_time_minutes) AS score, gc.geom
@@ -127,7 +120,7 @@ def _build_base_query(
 
     if mode is not None and purpose is not None:
         params["mode"] = mode.value
-        params["purpose"] = purpose.value
+        params["purpose"] = purpose
         return """
             SELECT gc.id, gc.cell_code, gc.population,
                    cs.score_normalized AS score, gc.geom
@@ -154,7 +147,7 @@ def _build_base_query(
         """
 
     if purpose is not None:
-        params["purpose"] = purpose.value
+        params["purpose"] = purpose
         return """
             SELECT gc.id, gc.cell_code, gc.population,
                    AVG(cs.score_normalized) AS score, gc.geom
@@ -228,7 +221,7 @@ async def get_available_departure_times(
 @router.get("/geojson", response_class=Response)
 async def get_cells_geojson(
     mode: TransportMode | None = Query(None, description="Filter by transport mode"),
-    purpose: Purpose | None = Query(None, description="Filter by destination purpose"),
+    purpose: str | None = Query(None, description="Filter by destination purpose (e.g. hospital, bachiller)"),
     metric: Metric = Query(Metric.score, description="Metric to return: score or travel_time"),
     resolution: int = Query(100, description="Grid resolution in meters: 100, 500, or 1000"),
     departure_time: str = Query(

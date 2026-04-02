@@ -1,8 +1,8 @@
-"""Boundary GeoJSON endpoints: region, municipalities, comarcas."""
+"""Boundary GeoJSON endpoints: region, municipalities, comarcas, nucleos."""
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,6 +101,55 @@ async def get_comarcas(
         {
             "type": "Feature",
             "properties": {"id": row.id, "comarca_code": row.comarca_code, "name": row.name},
+            "geometry": row.geometry,
+        }
+        for row in rows
+    ]
+
+    return Response(
+        content=json.dumps({"type": "FeatureCollection", "features": features}),
+        media_type="application/geo+json",
+    )
+
+
+@router.get("/nucleos/geojson", response_class=Response)
+async def get_nucleos(
+    include_diseminado: bool = Query(
+        False, description="Include dispersed (diseminado) areas (nucleo_num=99)"
+    ),
+    tenant: TenantContext = Depends(get_tenant),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Return EUSTAT núcleo (settlement) boundaries as GeoJSON."""
+    where = "tenant_id = :tid"
+    if not include_diseminado:
+        where += " AND nucleo_num != '99'"
+
+    result = await db.execute(
+        text(f"""
+            SELECT id, code, nucleo_num, name, entity_name,
+                   muni_code, muni_name,
+                   ST_AsGeoJSON(geom)::json AS geometry
+            FROM nucleos
+            WHERE {where}
+            ORDER BY muni_name, name
+        """),
+        {"tid": tenant.tenant_id},
+    )
+    rows = result.fetchall()
+
+    features = [
+        {
+            "type": "Feature",
+            "properties": {
+                "id": row.id,
+                "code": row.code,
+                "nucleo_num": row.nucleo_num,
+                "name": row.name,
+                "entity_name": row.entity_name,
+                "muni_code": row.muni_code,
+                "muni_name": row.muni_name,
+            },
             "geometry": row.geometry,
         }
         for row in rows

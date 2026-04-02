@@ -1,12 +1,20 @@
 """Import POI destinations from CSV files in data/pois/.
 
-Each CSV file maps to a destination type by filename (e.g. jobs.csv → type 'jobs').
-Expected columns: name, lon, lat, weight (optional, default 1.0).
+Supports two CSV formats:
+
+1. **Per-type files** (legacy): filename stem = destination type code.
+   Required columns: name, lon, lat. Optional: weight (default 1.0).
+
+2. **Unified file** (e.g. ``all_pois.csv``): a single CSV with a ``poi``
+   column that identifies the destination type per row.
+   Required columns: poi, nombre, longitud, latitud.
+   Optional: weight (default 1.0).
 """
 
 from __future__ import annotations
 
 import csv
+import re
 from pathlib import Path
 
 import structlog
@@ -19,10 +27,18 @@ logger = structlog.get_logger()
 LON_MIN, LON_MAX = -3.5, -2.3
 LAT_MIN, LAT_MAX = 42.9, 43.5
 
-REQUIRED_COLUMNS = {"name", "lon", "lat"}
+REQUIRED_COLUMNS_LEGACY = {"name", "lon", "lat"}
+REQUIRED_COLUMNS_UNIFIED = {"poi", "nombre", "longitud", "latitud"}
+
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
-def _ensure_destination_type(session: Session, code: str) -> int:
+def _to_code(raw: str) -> str:
+    """Convert a human-readable POI label to a snake_case DB code."""
+    return _NON_ALNUM.sub("_", raw.strip().lower()).strip("_")
+
+
+def _ensure_destination_type(session: Session, code: str, label: str | None = None) -> int:
     """Get or create a destination_type by code, return its id."""
     row = session.execute(
         text("SELECT id FROM destination_types WHERE code = :code"),
@@ -31,8 +47,8 @@ def _ensure_destination_type(session: Session, code: str) -> int:
     if row is not None:
         return row
 
-    # Auto-create with a human-friendly label derived from the code
-    label = code.replace("_", " ").title()
+    if label is None:
+        label = code.replace("_", " ").title()
     session.execute(
         text(
             "INSERT INTO destination_types (code, label) "
@@ -108,6 +124,98 @@ def _validate_row(
     return name, lon, lat, weight
 
 
+def _is_unified_csv(headers: set[str]) -> bool:
+    """Return True if the CSV uses the unified (poi, nombre, longitud, latitud) format."""
+    return REQUIRED_COLUMNS_UNIFIED.issubset(headers)
+
+
+def _import_unified_csv(
+    session: Session,
+    tenant_id: str,
+    csv_path: Path,
+    *,
+    clear_existing: bool,
+    log: structlog.stdlib.BoundLogger,
+) -> dict[str, int]:
+    """Import a unified CSV where a ``poi`` column identifies the type."""
+    results: dict[str, int] = {}
+    skipped = 0
+
+    # First pass: if clearing, collect unique types and delete
+    if clear_existing:
+        with open(csv_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            type_codes_seen: set[str] = set()
+            for row in reader:
+                row = {k.strip().lower(): v for k, v in row.items()}
+                raw_type = row.get("poi", "").strip()
+                if raw_type:
+                    type_codes_seen.add(_to_code(raw_type))
+        for code in type_codes_seen:
+            type_id = _ensure_destination_type(session, code)
+            deleted = session.execute(
+                text(
+                    "DELETE FROM destinations "
+                    "WHERE tenant_id = :tid AND type_id = :type_id"
+                ),
+                {"tid": tenant_id, "type_id": type_id},
+            ).rowcount
+            if deleted:
+                log.info("poi_import.cleared_existing", type_code=code, deleted=deleted)
+
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row_num, row in enumerate(reader, start=2):
+            row = {k.strip().lower(): v for k, v in row.items()}
+
+            raw_type = row.get("poi", "").strip()
+            if not raw_type:
+                log.warning("poi_import.missing_poi_type", file=csv_path.name, row=row_num)
+                skipped += 1
+                continue
+
+            code = _to_code(raw_type)
+            # Remap to legacy-style row for validation
+            mapped = {
+                "name": row.get("nombre", "").strip(),
+                "lon": row.get("longitud", "").strip(),
+                "lat": row.get("latitud", "").strip(),
+                "weight": row.get("weight", "").strip(),
+            }
+            parsed = _validate_row(mapped, row_num, csv_path.name)
+            if parsed is None:
+                skipped += 1
+                continue
+
+            name, lon, lat, weight = parsed
+            type_id = _ensure_destination_type(session, code, label=raw_type)
+
+            session.execute(
+                text("""
+                    INSERT INTO destinations
+                        (tenant_id, type_id, name, geom, weight, metadata)
+                    VALUES (
+                        :tid, :type_id, :name,
+                        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
+                        :weight, '{}'::jsonb
+                    )
+                """),
+                {
+                    "tid": tenant_id,
+                    "type_id": type_id,
+                    "name": name,
+                    "lon": lon,
+                    "lat": lat,
+                    "weight": weight,
+                },
+            )
+            results[code] = results.get(code, 0) + 1
+
+    session.commit()
+    log.info("poi_import.unified_done", imported=results, skipped=skipped)
+    return results
+
+
 def import_pois_from_csv(
     session: Session,
     tenant_id: str,
@@ -117,12 +225,18 @@ def import_pois_from_csv(
 ) -> dict[str, int]:
     """Import all CSV files from pois_dir into the destinations table.
 
+    Detects the CSV format automatically:
+    - If a CSV contains ``poi, nombre, longitud, latitud`` columns it is
+      treated as a *unified* file (multiple types in one file).
+    - Otherwise the legacy per-type format is used (filename = type code,
+      columns: name, lon, lat, weight).
+
     Args:
         session: SQLAlchemy session.
         tenant_id: Tenant UUID string.
         pois_dir: Directory containing CSV files.
-        clear_existing: If True, delete existing CSV-imported destinations
-            for each type before inserting.
+        clear_existing: If True, delete existing destinations for each
+            type before inserting.
 
     Returns:
         Dict mapping destination type code → number of rows imported.
@@ -141,8 +255,38 @@ def import_pois_from_csv(
     results: dict[str, int] = {}
 
     for csv_path in csv_files:
-        type_code = csv_path.stem  # e.g. "jobs" from "jobs.csv"
-        log_file = log.bind(file=csv_path.name, type_code=type_code)
+        log_file = log.bind(file=csv_path.name)
+
+        # Peek at headers to detect format
+        with open(csv_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                log_file.warning("poi_import.empty_file")
+                continue
+            headers = {h.strip().lower() for h in reader.fieldnames}
+
+        if _is_unified_csv(headers):
+            log_file.info("poi_import.detected_unified_format")
+            file_results = _import_unified_csv(
+                session, tenant_id, csv_path,
+                clear_existing=clear_existing, log=log_file,
+            )
+            for code, count in file_results.items():
+                results[code] = results.get(code, 0) + count
+            continue
+
+        # Legacy per-type format
+        type_code = csv_path.stem
+        log_file = log_file.bind(type_code=type_code)
+
+        missing = REQUIRED_COLUMNS_LEGACY - headers
+        if missing:
+            log_file.error(
+                "poi_import.missing_columns",
+                missing=sorted(missing),
+                found=sorted(headers),
+            )
+            continue
 
         type_id = _ensure_destination_type(session, type_code)
 
@@ -162,24 +306,7 @@ def import_pois_from_csv(
 
         with open(csv_path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
-
-            # Validate header
-            if reader.fieldnames is None:
-                log_file.warning("poi_import.empty_file")
-                continue
-
-            headers = {h.strip().lower() for h in reader.fieldnames}
-            missing = REQUIRED_COLUMNS - headers
-            if missing:
-                log_file.error(
-                    "poi_import.missing_columns",
-                    missing=sorted(missing),
-                    found=sorted(headers),
-                )
-                continue
-
             for row_num, row in enumerate(reader, start=2):
-                # Normalise keys to lowercase
                 row = {k.strip().lower(): v for k, v in row.items()}
                 parsed = _validate_row(row, row_num, csv_path.name)
                 if parsed is None:

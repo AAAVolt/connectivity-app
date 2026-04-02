@@ -4,12 +4,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/lib/i18n";
+import type { Lang } from "@/lib/i18n";
 
-const NAV = [
-  { href: "/", label: "Dashboard" },
-  { href: "/map", label: "Map" },
-  { href: "/about", label: "About" },
+const NAV_KEYS = [
+  { href: "/", key: "nav.dashboard" },
+  { href: "/map", key: "nav.map" },
+  { href: "/about", key: "nav.methodology" },
 ] as const;
+
+const LANGS: { code: Lang; flag: string | null; img?: string; label: string }[] = [
+  { code: "eu", flag: null, img: "/euskera.png", label: "Euskara" },
+  { code: "es", flag: "🇪🇸", label: "Español" },
+  { code: "en", flag: "🇬🇧", label: "English" },
+];
 
 /** Height in pixels of the invisible hover zone at the top of the viewport. */
 const TRIGGER_ZONE = 12;
@@ -18,6 +26,7 @@ const HIDE_DELAY = 400;
 
 export function AppSidebar({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { t, lang, setLang } = useTranslation();
   const [visible, setVisible] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -60,10 +69,10 @@ export function AppSidebar({ children }: { children: React.ReactNode }) {
         )}
       >
         <span className="text-sm font-semibold tracking-tight mr-2">
-          Bizkaia Connectivity
+          {t("app.title")}
         </span>
         <nav className="flex items-center gap-1">
-          {NAV.map(({ href, label }) => {
+          {NAV_KEYS.map(({ href, key }) => {
             const active =
               href === "/" ? pathname === "/" : pathname.startsWith(href);
             return (
@@ -77,11 +86,32 @@ export function AppSidebar({ children }: { children: React.ReactNode }) {
                     : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                 )}
               >
-                {label}
+                {t(key)}
               </Link>
             );
           })}
         </nav>
+
+        {/* Language switcher */}
+        <div className="ml-auto flex items-center gap-1">
+          {LANGS.map((l) => (
+            <button
+              key={l.code}
+              onClick={() => setLang(l.code)}
+              title={l.label}
+              className={cn(
+                "rounded px-1.5 py-0.5 text-sm transition-opacity",
+                lang === l.code ? "opacity-100" : "opacity-40 hover:opacity-75",
+              )}
+            >
+              {l.img ? (
+                <img src={l.img} alt={l.label} className="h-4 w-auto inline-block" />
+              ) : (
+                l.flag
+              )}
+            </button>
+          ))}
+        </div>
       </header>
 
       {/* Content takes the full viewport — header overlays on top */}

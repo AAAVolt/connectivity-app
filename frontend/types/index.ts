@@ -9,7 +9,7 @@ export interface CellScoreDetail {
   mode: string;
   purpose: string;
   score: number;
-  scoreNormalized: number | null;
+  score_normalized: number | null;
 }
 
 export interface CellResponse {
@@ -29,17 +29,17 @@ export interface AreaStatsResponse {
 }
 
 export interface ConnectivityScore {
-  cellId: number;
+  cell_id: number;
   mode: "WALK" | "TRANSIT";
   purpose: string;
   score: number;
-  scoreNormalized: number | null;
+  score_normalized: number | null;
 }
 
 export interface CombinedScore {
-  cellId: number;
-  combinedScore: number;
-  combinedScoreNormalized: number | null;
+  cell_id: number;
+  combined_score: number;
+  combined_score_normalized: number | null;
 }
 
 export interface Tenant {

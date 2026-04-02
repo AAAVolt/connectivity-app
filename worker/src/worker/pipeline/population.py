@@ -53,14 +53,67 @@ def areal_weight_pure(
     return result
 
 
+def dasymetric_weight_pure(
+    sources: list[tuple[ShapelyPolygon, float]],
+    cells: list[tuple[int, ShapelyPolygon]],
+    mask: ShapelyPolygon,
+) -> dict[int, float]:
+    """Allocate population with dasymetric masking (pure function).
+
+    Mirrors the PostGIS dasymetric SQL: population from each source is
+    redistributed only into the intersection of the source with *mask*.
+    Cells outside the mask receive zero.
+
+    For each (cell, source) pair:
+        masked_src   = source ∩ mask
+        contribution = source_pop × area(cell ∩ masked_src) / area(masked_src)
+
+    Args:
+        sources: List of (geometry, population) for each source polygon.
+        cells: List of (cell_id, geometry) for each grid cell.
+        mask: Union of all núcleo polygons (non-diseminado).
+
+    Returns:
+        Mapping of cell_id to allocated population.
+    """
+    result: dict[int, float] = {}
+
+    for cell_id, cell_geom in cells:
+        total_pop = 0.0
+        for src_geom, src_pop in sources:
+            masked_src = src_geom.intersection(mask)
+            if masked_src.is_empty:
+                continue
+            masked_area = masked_src.area
+            if masked_area <= 0:
+                continue
+            if not cell_geom.intersects(masked_src):
+                continue
+            isect = cell_geom.intersection(masked_src)
+            proportion = isect.area / masked_area
+            total_pop += src_pop * proportion
+        result[cell_id] = total_pop
+
+    return result
+
+
 def disaggregate_population(
     session: Session,
     tenant_id: str,
+    *,
+    use_nucleos: bool = True,
 ) -> dict[str, float]:
     """Disaggregate population from source polygons to grid cells.
 
     Uses PostGIS for all spatial operations (performant on large grids).
     Area calculations use projected CRS (EPSG:25830) for metric accuracy.
+
+    When *use_nucleos* is True and the ``nucleos`` table has data for
+    this tenant, only grid cells that intersect a **núcleo** polygon
+    (``nucleo_num != '99'``) receive population (dasymetric masking).
+    Population within each source is redistributed proportionally to
+    the area of each cell's intersection with **both** the source and
+    a núcleo.  Cells in *diseminado* (dispersed rural) areas get 0.
 
     Idempotent: resets all cell populations to 0 before recalculating.
 
@@ -103,42 +156,103 @@ def disaggregate_population(
         {"tid": tenant_id},
     )
 
-    # Areal weighting via PostGIS:
-    #   For each (grid_cell, population_source) intersection,
-    #   allocated = source_pop * (intersection_area / source_area)
-    #
-    # ST_MakeValid guards against invalid source geometries (e.g.
-    # self-intersections in imported shapefiles).  Without it, invalid
-    # geometries cause ST_Intersection to error or produce empty results,
-    # silently losing population.
-    update_sql = text("""
-        UPDATE grid_cells gc
-        SET population = agg.pop
-        FROM (
-            SELECT
-                gc2.id AS cell_id,
-                SUM(
-                    ps.population
-                    * ST_Area(
-                        ST_Transform(
-                            ST_Intersection(gc2.geom, ST_MakeValid(ps.geom)),
+    # Decide whether to apply dasymetric masking via nucleos
+    nucleo_count = 0
+    if use_nucleos:
+        nucleo_count = session.execute(
+            text(
+                "SELECT COUNT(*) FROM nucleos "
+                "WHERE tenant_id = :tid AND nucleo_num != '99'"
+            ),
+            {"tid": tenant_id},
+        ).scalar() or 0
+
+    has_nucleos = nucleo_count > 0
+    if use_nucleos and not has_nucleos:
+        log.info("population_no_nucleos_found_falling_back_to_areal")
+
+    if has_nucleos:
+        log.info("population_dasymetric_mode", nucleo_count=nucleo_count)
+        # Build a single unified mask from all núcleo polygons (ST_Union)
+        # so that overlapping núcleos don't double-count.
+        #
+        # For each source we compute:
+        #   denominator = area(source ∩ nucleo_mask)    -- total "settled" area
+        #   numerator   = area(cell ∩ source ∩ nucleo_mask) per cell
+        #   cell_pop    = source_pop × numerator / denominator
+        #
+        # This guarantees that the sum of allocations from each source
+        # equals source_pop (conservation, modulo boundary clipping).
+        update_sql = text("""
+            WITH nucleo_mask AS (
+                SELECT ST_Union(ST_MakeValid(geom)) AS geom
+                FROM nucleos
+                WHERE tenant_id = :tid AND nucleo_num != '99'
+            ),
+            masked_sources AS (
+                SELECT
+                    ps.id AS source_id,
+                    ps.population,
+                    ST_Intersection(ST_MakeValid(ps.geom), nm.geom) AS masked_geom,
+                    ST_Area(ST_Transform(
+                        ST_Intersection(ST_MakeValid(ps.geom), nm.geom),
+                        :proj_srid
+                    )) AS masked_area
+                FROM population_sources ps, nucleo_mask nm
+                WHERE ps.tenant_id = :tid
+                  AND ST_Intersects(ps.geom, nm.geom)
+            )
+            UPDATE grid_cells gc
+            SET population = agg.pop
+            FROM (
+                SELECT
+                    gc2.id AS cell_id,
+                    SUM(
+                        ms.population
+                        * ST_Area(ST_Transform(
+                            ST_Intersection(gc2.geom, ms.masked_geom),
                             :proj_srid
-                        )
-                      )
-                    / NULLIF(
-                        ST_Area(ST_Transform(ST_MakeValid(ps.geom), :proj_srid)),
-                        0
-                      )
-                ) AS pop
-            FROM grid_cells gc2
-            JOIN population_sources ps
-                ON ST_Intersects(gc2.geom, ST_MakeValid(ps.geom))
-               AND gc2.tenant_id = ps.tenant_id
-            WHERE gc2.tenant_id = :tid
-            GROUP BY gc2.id
-        ) agg
-        WHERE gc.id = agg.cell_id
-    """)
+                          ))
+                        / NULLIF(ms.masked_area, 0)
+                    ) AS pop
+                FROM grid_cells gc2
+                JOIN masked_sources ms
+                    ON ST_Intersects(gc2.geom, ms.masked_geom)
+                WHERE gc2.tenant_id = :tid
+                GROUP BY gc2.id
+            ) agg
+            WHERE gc.id = agg.cell_id
+        """)
+    else:
+        # Plain areal weighting (original behaviour)
+        update_sql = text("""
+            UPDATE grid_cells gc
+            SET population = agg.pop
+            FROM (
+                SELECT
+                    gc2.id AS cell_id,
+                    SUM(
+                        ps.population
+                        * ST_Area(
+                            ST_Transform(
+                                ST_Intersection(gc2.geom, ST_MakeValid(ps.geom)),
+                                :proj_srid
+                            )
+                          )
+                        / NULLIF(
+                            ST_Area(ST_Transform(ST_MakeValid(ps.geom), :proj_srid)),
+                            0
+                          )
+                    ) AS pop
+                FROM grid_cells gc2
+                JOIN population_sources ps
+                    ON ST_Intersects(gc2.geom, ST_MakeValid(ps.geom))
+                   AND gc2.tenant_id = ps.tenant_id
+                WHERE gc2.tenant_id = :tid
+                GROUP BY gc2.id
+            ) agg
+            WHERE gc.id = agg.cell_id
+        """)
 
     result = session.execute(update_sql, {
         "tid": tenant_id,
@@ -164,24 +278,28 @@ def disaggregate_population(
     allocated = float(stats_row.total_pop)
     source = float(total_source_pop)
 
-    stats = {
+    stats: dict[str, float] = {
         "source_population": source,
         "allocated_population": allocated,
         "cells_with_population": int(stats_row.cells_with_pop),
         "total_cells": int(stats_row.total_cells),
         "cells_updated": cells_updated,
+        "dasymetric": 1.0 if has_nucleos else 0.0,
     }
 
-    # Warn if totals diverge by more than 0.1%
+    # Warn if totals diverge by more than 5% (dasymetric deliberately
+    # discards diseminado population, so expect higher loss)
     if source > 0:
         loss_pct = abs(source - allocated) / source * 100
         stats["loss_pct"] = round(loss_pct, 4)
-        if loss_pct > 0.1:
+        threshold = 10.0 if has_nucleos else 0.1
+        if loss_pct > threshold:
             log.warning(
                 "population_conservation_warning",
                 source=source,
                 allocated=allocated,
                 loss_pct=round(loss_pct, 2),
+                mode="dasymetric" if has_nucleos else "areal",
             )
 
     log.info("population_disaggregation_complete", **stats)

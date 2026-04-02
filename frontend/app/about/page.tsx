@@ -1,303 +1,386 @@
-import type { Metadata } from "next";
+"use client";
 
-export const metadata: Metadata = {
-  title: "About | Bizkaia Connectivity",
-  description:
-    "Methodology, data sources, and limitations of the Bizkaia transport connectivity tool.",
-};
+import { useTranslation } from "@/lib/i18n";
 
-const COLOR_STOPS = [
+/* ── Score color ramp (kept in sync with connectivity-map.tsx) ── */
+const SCORE_STOPS = [
   "#1a0a00", "#7f1b00", "#c4321a", "#e05a2b", "#f0892e", "#f5b731",
   "#e8d534", "#b5d935", "#6ec440", "#2da84e", "#1a8a5c", "#0e5e8c",
 ];
 
-export default function AboutPage() {
+/* ── Travel time bands (kept in sync with connectivity-map.tsx) ── */
+const TT_BANDS_KEYS = [
+  { color: "#1a9850", key: "< 30 min" },
+  { color: "#91cf60", key: "30\u201345 min" },
+  { color: "#fee08b", key: "45\u201360 min" },
+  { color: "#fc8d59", key: "60\u201375 min" },
+  { color: "#d73027", key: "75\u201390 min" },
+  { color: "#878787", key: "> 90 min" },
+];
+
+/* ── POI catalogue (matches scoring.yaml + map) ── */
+const POIS = [
+  { code: "aeropuerto", label: "Aeropuerto", descKey: "poi.desc.aeropuerto", color: "#6366f1" },
+  { code: "bachiller", label: "Bachiller", descKey: "poi.desc.bachiller", color: "#f59e0b" },
+  { code: "centro_educativo", label: "Centro Educativo", descKey: "poi.desc.centro_educativo", color: "#eab308" },
+  { code: "centro_urbano", label: "Centro Urbano", descKey: "poi.desc.centro_urbano", color: "#8b5cf6" },
+  { code: "consulta_general", label: "Consulta General", descKey: "poi.desc.consulta_general", color: "#ef4444" },
+  { code: "hacienda", label: "Hacienda", descKey: "poi.desc.hacienda", color: "#64748b" },
+  { code: "hospital", label: "Hospital", descKey: "poi.desc.hospital", color: "#dc2626" },
+  { code: "osakidetza", label: "Osakidetza", descKey: "poi.desc.osakidetza", color: "#f97316" },
+  { code: "residencia", label: "Residencia", descKey: "poi.desc.residencia", color: "#14b8a6" },
+  { code: "universidad", label: "Universidad", descKey: "poi.desc.universidad", color: "#22c55e" },
+];
+
+/* ── Transit operators ── */
+const OPERATORS = [
+  { name: "Bizkaibus", descKey: "op.bizkaibus", color: "#166534" },
+  { name: "Bilbobus", descKey: "op.bilbobus", color: "#d97706" },
+  { name: "Metro Bilbao", descKey: "op.metrobilbao", color: "#dc2626" },
+  { name: "Euskotren", descKey: "op.euskotren", color: "#7c3aed" },
+  { name: "Renfe Cercan\u00edas", descKey: "op.renfe", color: "#0369a1" },
+  { name: "Funicular Artxanda", descKey: "op.funicular", color: "#a855f7" },
+];
+
+/* ── Reusable pieces ── */
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return <h2 className="mb-3 text-base font-semibold text-foreground">{children}</h2>;
+}
+function Step({ n, title }: { n: number; title: string }) {
   return (
-    <div className="max-w-2xl p-6 lg:p-8">
-      <h1 className="text-lg font-semibold">About</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        An open-source transport accessibility tool for Bizkaia, inspired by the
-        UK DfT&apos;s Connectivity Assessment Toolkit.
+    <h3 className="mt-6 mb-2 flex items-baseline gap-2 text-[13px] font-medium text-foreground">
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
+        {n}
+      </span>
+      {title}
+    </h3>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════ */
+
+export default function MethodologyPage() {
+  const { t } = useTranslation();
+
+  return (
+    <div className="mx-auto max-w-2xl px-6 pt-16 pb-20 lg:px-8 lg:pt-20">
+      <h1 className="text-2xl font-semibold">{t("method.title")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {t("method.intro")}
       </p>
 
-      <article className="mt-8 space-y-10 text-sm leading-relaxed text-muted-foreground">
-        {/* What */}
+      <article className="mt-8 space-y-12 text-sm leading-relaxed text-muted-foreground">
+
+        {/* ─── 1. Overview ─── */}
         <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            What is this tool?
-          </h2>
+          <SectionHeading>{t("method.whatIsThis")}</SectionHeading>
           <p>
-            Bizkaia Connectivity measures how easy it is for people in any part
-            of Bizkaia to reach essential everyday services &mdash; jobs,
-            schools, healthcare, and food shops &mdash; by walking or using
-            public transport.
+            {t("method.whatIsThisP1")}{" "}
+            <em>&ldquo;{t("method.whatIsThisQuestion")}&rdquo;</em>
           </p>
-          <p className="mt-3">
-            The territory is divided into a multi-resolution square grid. Scores
-            are computed at 500&nbsp;m and aggregated upwards. The map switches
-            between three tiers as you zoom:
-          </p>
+          <p className="mt-3" dangerouslySetInnerHTML={{ __html: t("method.whatIsThisP2") }} />
           <ul className="mt-2 ml-4 list-disc space-y-1">
-            <li><strong className="text-foreground">1&nbsp;km</strong> &mdash; regional overview</li>
-            <li><strong className="text-foreground">500&nbsp;m</strong> &mdash; neighbourhood level</li>
-            <li><strong className="text-foreground">100&nbsp;m</strong> &mdash; street-level detail</li>
+            <li><strong className="text-foreground">{t("method.zoom1km").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom1km").split(" \u2014 ")[1]}</li>
+            <li><strong className="text-foreground">{t("method.zoom500m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom500m").split(" \u2014 ")[1]}</li>
+            <li><strong className="text-foreground">{t("method.zoom200m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom200m").split(" \u2014 ")[1]}</li>
+            <li><strong className="text-foreground">{t("method.zoom100m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom100m").split(" \u2014 ")[1]}</li>
           </ul>
-          <p className="mt-3">
-            Scores reflect the number and proximity of reachable destinations,
-            with closer destinations weighted more heavily and diminishing
-            returns for additional facilities. All scores are normalised to
-            a <strong className="text-foreground">0&ndash;100</strong> scale.
-          </p>
         </section>
 
-        {/* Modes */}
+        {/* ─── 2. Data pipeline ─── */}
         <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            Travel modes
-          </h2>
-          <ul className="ml-4 list-disc space-y-2">
-            <li>
-              <strong className="text-foreground">Walking</strong> &mdash;
-              door-to-door on the pedestrian network from OpenStreetMap.
-            </li>
-            <li>
-              <strong className="text-foreground">Public transport</strong> &mdash;
-              walk + transit using GTFS timetables for Bizkaibus, Bilbobus,
-              Metro Bilbao, Euskotren, Renfe Cercan&iacute;as, and the Artxanda
-              Funicular. Morning peak (07:00&ndash;10:00).
-            </li>
-          </ul>
-          <p className="mt-3">
-            Maximum travel time: <strong className="text-foreground">60 minutes</strong>.
-            Destinations beyond this are considered unreachable.
-          </p>
-        </section>
+          <SectionHeading>{t("method.dataPipeline")}</SectionHeading>
+          <p>{t("method.dataPipelineIntro")}</p>
 
-        {/* Destinations */}
-        <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            Destination categories
-          </h2>
-          <div className="overflow-x-auto rounded-md border">
+          <Step n={1} title={t("method.step1Title")} />
+          <p>{t("method.step1Text")}</p>
+
+          <Step n={2} title={t("method.step2Title")} />
+          <p dangerouslySetInnerHTML={{ __html: t("method.step2Text") }} />
+
+          <Step n={3} title={t("method.step3Title")} />
+          <p>{t("method.step3Text")}</p>
+          <div className="mt-3 overflow-x-auto rounded-md border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/40">
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Purpose</th>
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Includes</th>
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Rationale</th>
+                  <th className="w-8 px-3 py-2" />
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.step3Category")}</th>
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.step3Description")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                <tr>
-                  <td className="px-3 py-2 font-medium text-foreground">Jobs</td>
-                  <td className="px-3 py-2">Employment centres, weighted by job count</td>
-                  <td className="px-3 py-2">Primary driver of economic opportunity</td>
-                </tr>
-                <tr>
-                  <td className="px-3 py-2 font-medium text-foreground">Education</td>
-                  <td className="px-3 py-2">Primary schools</td>
-                  <td className="px-3 py-2">Families need reliable school access</td>
-                </tr>
-                <tr>
-                  <td className="px-3 py-2 font-medium text-foreground">Health</td>
-                  <td className="px-3 py-2">GP surgeries, healthcare centres</td>
-                  <td className="px-3 py-2">Routine healthcare without a car</td>
-                </tr>
-                <tr>
-                  <td className="px-3 py-2 font-medium text-foreground">Retail</td>
-                  <td className="px-3 py-2">Supermarkets</td>
-                  <td className="px-3 py-2">Basic food access</td>
-                </tr>
+                {POIS.map((p) => (
+                  <tr key={p.code}>
+                    <td className="px-3 py-2">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: p.color }}
+                      />
+                    </td>
+                    <td className="px-3 py-2 font-medium text-foreground">{p.label}</td>
+                    <td className="px-3 py-2">{t(p.descKey)}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
+          <p className="mt-2 text-xs">{t("method.step3Toggle")}</p>
+
+          <Step n={4} title={t("method.step4Title")} />
+          <p>{t("method.step4Text")}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {OPERATORS.map((op) => (
+              <span
+                key={op.name}
+                className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
+              >
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: op.color }}
+                />
+                <span className="font-medium text-foreground">{op.name}</span>
+                <span className="text-muted-foreground">{t(op.descKey)}</span>
+              </span>
+            ))}
+          </div>
+          <p className="mt-3">{t("method.step4Foot")}</p>
+
+          <Step n={5} title={t("method.step5Title")} />
+          <p dangerouslySetInnerHTML={{ __html: t("method.step5Text") }} />
+          <ul className="mt-2 ml-4 list-disc space-y-1">
+            <li>
+              <strong className="text-foreground">{t("method.step5Mode")}</strong> {t("method.step5ModeVal")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.step5Cutoff")}</strong> {t("method.step5CutoffVal")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.step5Slots")}</strong> {t("method.step5SlotsVal")}
+            </li>
+          </ul>
+
+          <Step n={6} title={t("method.step6Title")} />
+          <p>{t("method.step6Text")}</p>
         </section>
 
-        {/* Methodology */}
+        {/* ─── 3. Scoring model ─── */}
         <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            How scores are calculated
-          </h2>
-          <p>
-            We ask: <em>&ldquo;From this cell, how many destinations can I
-            reach, how quickly, and how much does each one matter?&rdquo;</em>
-          </p>
+          <SectionHeading>{t("method.scoringModel")}</SectionHeading>
 
-          <h3 className="mt-5 mb-2 text-sm font-medium text-foreground">
-            1. Travel time computation
-          </h3>
-          <p>
-            The R5 routing engine (via{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs">r5r</code>)
-            computes travel times from every grid cell to every destination for
-            both modes. Transit calculations model transfers, waiting times, and
-            walk access/egress.
-          </p>
-
-          <h3 className="mt-5 mb-2 text-sm font-medium text-foreground">
-            2. Distance decay
-          </h3>
-          <p>
-            Closer destinations count more. We apply an exponential decay:
-          </p>
+          <Step n={1} title={t("method.decay")} />
+          <p>{t("method.decayP1")}</p>
           <div className="my-3 rounded-md border bg-muted/30 px-4 py-2.5 text-center font-mono text-xs">
             impedance = e<sup>&minus;&alpha; &times; t</sup>
           </div>
-          <p>
-            where <em>t</em> is travel time in minutes and <em>&alpha;</em> is a
-            mode/purpose-specific decay rate:
-          </p>
-          <div className="mt-2 overflow-x-auto rounded-md border">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-muted/40">
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Purpose</th>
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Walk &alpha;</th>
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Transit &alpha;</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y font-mono">
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Jobs</td><td className="px-3 py-2">0.08</td><td className="px-3 py-2">0.03</td></tr>
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Education</td><td className="px-3 py-2">0.06</td><td className="px-3 py-2">0.025</td></tr>
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Health</td><td className="px-3 py-2">0.05</td><td className="px-3 py-2">0.02</td></tr>
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Retail</td><td className="px-3 py-2">0.07</td><td className="px-3 py-2">0.03</td></tr>
-              </tbody>
-            </table>
-          </div>
+          <p dangerouslySetInnerHTML={{ __html: t("method.decayP2") }} />
+          <p className="mt-2" dangerouslySetInnerHTML={{ __html: t("method.decayP3") }} />
 
-          <h3 className="mt-5 mb-2 text-sm font-medium text-foreground">
-            3. Diminishing returns
-          </h3>
-          <p>
-            A concave power transform compresses high values so areas with many
-            destinations don&rsquo;t dominate disproportionately:
-          </p>
+          <Step n={2} title={t("method.diminishing")} />
+          <p>{t("method.diminishingP1")}</p>
           <div className="my-3 rounded-md border bg-muted/30 px-4 py-2.5 text-center font-mono text-xs">
             adjusted = raw<sup>0.7</sup>
           </div>
+          <p>{t("method.diminishingP2")}</p>
 
-          <h3 className="mt-5 mb-2 text-sm font-medium text-foreground">
-            4. Normalisation
-          </h3>
-          <p>
-            Each (mode, purpose) pair is scaled to 0&ndash;100 via min-max
-            normalisation across all cells.
-          </p>
+          <Step n={3} title={t("method.normalisation")} />
+          <p>{t("method.normalisationP1")}</p>
 
-          <h3 className="mt-5 mb-2 text-sm font-medium text-foreground">
-            5. Combined score
-          </h3>
-          <p>
-            A weighted average of all eight normalised scores:
-          </p>
+          <Step n={4} title={t("method.combined")} />
+          <p>{t("method.combinedP1")}</p>
           <div className="mt-2 overflow-x-auto rounded-md border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/40">
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Purpose</th>
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Walk</th>
-                  <th className="px-3 py-2 text-left font-medium text-foreground">Transit</th>
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.combinedCategory")}</th>
+                  <th className="px-3 py-2 text-right font-medium text-foreground">{t("method.combinedWeight")}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y font-mono">
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Jobs</td><td className="px-3 py-2">15%</td><td className="px-3 py-2">15%</td></tr>
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Education</td><td className="px-3 py-2">10%</td><td className="px-3 py-2">10%</td></tr>
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Health</td><td className="px-3 py-2">12.5%</td><td className="px-3 py-2">12.5%</td></tr>
-                <tr><td className="px-3 py-2 font-sans font-medium text-foreground">Retail</td><td className="px-3 py-2">12.5%</td><td className="px-3 py-2">12.5%</td></tr>
+              <tbody className="divide-y">
+                {POIS.map((p) => (
+                  <tr key={p.code}>
+                    <td className="px-3 py-2 font-medium text-foreground">{p.label}</td>
+                    <td className="px-3 py-2 text-right font-mono">10%</td>
+                  </tr>
+                ))}
               </tbody>
+              <tfoot>
+                <tr className="border-t bg-muted/20">
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.combinedTotal")}</td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold">100%</td>
+                </tr>
+              </tfoot>
             </table>
           </div>
-          <p className="mt-3">
-            Jobs receive the largest share. The combined score is normalised a
-            final time to 0&ndash;100.
-          </p>
+          <p className="mt-3">{t("method.combinedP2")}</p>
         </section>
 
-        {/* Reading the map */}
+        {/* ─── 4. Reading the map ─── */}
         <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            Reading the map
-          </h2>
-          <p>Each cell is coloured by its score:</p>
+          <SectionHeading>{t("method.readingMap")}</SectionHeading>
+
+          <p className="mb-3 font-medium text-foreground">{t("method.accessScore")}</p>
+          <p>{t("method.accessScoreP1")}</p>
           <div className="mt-3">
             <div
               className="h-3 w-full rounded-sm"
               style={{
-                background: `linear-gradient(to right, ${COLOR_STOPS.join(", ")})`,
+                background: `linear-gradient(to right, ${SCORE_STOPS.join(", ")})`,
               }}
             />
             <div className="mt-1 flex justify-between text-xs">
-              <span>0</span>
-              <span>50</span>
-              <span>100</span>
+              <span>{t("method.scorePoor")}</span>
+              <span>{t("method.scoreMid")}</span>
+              <span>{t("method.scoreExcellent")}</span>
             </div>
           </div>
-          <p className="mt-3">
-            Use the layer panel to switch between combined and per-purpose
-            scores. Click a cell for its breakdown. Toggle transit routes and
-            stops to see the underlying network.
-          </p>
-        </section>
 
-        {/* Data sources */}
-        <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            Data sources
-          </h2>
-          <ul className="ml-4 list-disc space-y-1">
-            <li><strong className="text-foreground">Network</strong> &mdash; OpenStreetMap</li>
-            <li><strong className="text-foreground">Transit</strong> &mdash; GTFS feeds (Bizkaibus, Bilbobus, Metro Bilbao, Euskotren, Renfe, Funicular)</li>
-            <li><strong className="text-foreground">Destinations</strong> &mdash; public registers and open data portals</li>
-            <li><strong className="text-foreground">Boundaries</strong> &mdash; official administrative boundaries</li>
+          <p className="mt-5 mb-3 font-medium text-foreground">{t("method.travelTimeNearest")}</p>
+          <p>{t("method.travelTimeP1")}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {TT_BANDS_KEYS.map((b) => (
+              <span
+                key={b.key}
+                className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-sm"
+                  style={{ backgroundColor: b.color }}
+                />
+                {b.key}
+              </span>
+            ))}
+          </div>
+
+          <p className="mt-5 mb-3 font-medium text-foreground">{t("method.zeroPop")}</p>
+          <p>{t("method.zeroPopP1")}</p>
+
+          <p className="mt-5 mb-3 font-medium text-foreground">{t("method.mapControls")}</p>
+          <ul className="ml-4 list-disc space-y-1.5">
+            <li>
+              <strong className="text-foreground">{t("method.controlMetricToggle")}</strong> &mdash;{" "}
+              {t("method.controlMetricToggleDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.controlDepartureSlider")}</strong> &mdash;{" "}
+              {t("method.controlDepartureSliderDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.controlPoiCategory")}</strong> &mdash;{" "}
+              {t("method.controlPoiCategoryDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.controlLayers")}</strong> &mdash;{" "}
+              {t("method.controlLayersDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.controlDestinations")}</strong> &mdash;{" "}
+              {t("method.controlDestinationsDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.controlTransit")}</strong> &mdash;{" "}
+              {t("method.controlTransitDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.controlClick")}</strong>{" "}
+              {t("method.controlClickDesc")}
+            </li>
           </ul>
         </section>
 
-        {/* Limitations */}
+        {/* ─── 5. Dashboard ─── */}
         <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            Limitations
-          </h2>
+          <SectionHeading>{t("method.dashboardAnalytics")}</SectionHeading>
+          <p>{t("method.dashboardP1")}</p>
+          <ul className="mt-2 ml-4 list-disc space-y-1.5">
+            <li>
+              <strong className="text-foreground">{t("method.dashboardOverview")}</strong> &mdash;{" "}
+              {t("method.dashboardOverviewDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.dashboardComarcas")}</strong> &mdash;{" "}
+              {t("method.dashboardComarcasDesc")}
+            </li>
+            <li>
+              <strong className="text-foreground">{t("method.dashboardMunicipios")}</strong> &mdash;{" "}
+              {t("method.dashboardMunicipiosDesc")}
+            </li>
+          </ul>
+          <p className="mt-3">{t("method.dashboardP2")}</p>
+        </section>
+
+        {/* ─── 6. Data sources ─── */}
+        <section>
+          <SectionHeading>{t("method.dataSources")}</SectionHeading>
+          <div className="overflow-x-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.dsLayer")}</th>
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.dsSource")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.dsStreet")}</td>
+                  <td className="px-3 py-2">{t("method.dsStreetVal")}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.dsTransit")}</td>
+                  <td className="px-3 py-2">{t("method.dsTransitVal")}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.dsPop")}</td>
+                  <td className="px-3 py-2">{t("method.dsPopVal")}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.dsDest")}</td>
+                  <td className="px-3 py-2">{t("method.dsDestVal")}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.dsBound")}</td>
+                  <td className="px-3 py-2">{t("method.dsBoundVal")}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* ─── 7. Limitations ─── */}
+        <section>
+          <SectionHeading>{t("method.limitations")}</SectionHeading>
           <ul className="ml-4 list-disc space-y-2">
             <li>
-              <strong className="text-foreground">Modes.</strong> Only walking
-              and transit. Areas well-connected by car but poorly by transit
-              show low scores.
+              <strong className="text-foreground">{t("method.limModes")}</strong>{" "}
+              {t("method.limModesDesc")}
             </li>
             <li>
-              <strong className="text-foreground">Timetables.</strong> Based on
-              published schedules; real-world delays not captured.
+              <strong className="text-foreground">{t("method.limTimetables")}</strong>{" "}
+              {t("method.limTimetablesDesc")}
             </li>
             <li>
-              <strong className="text-foreground">Completeness.</strong> Some
-              facilities may be missing from the destination dataset.
+              <strong className="text-foreground">{t("method.limCompleteness")}</strong>{" "}
+              {t("method.limCompletenessDesc")}
             </li>
             <li>
-              <strong className="text-foreground">Time of day.</strong> AM peak
-              only (07:00&ndash;10:00). Evening and weekend connectivity may
-              differ.
+              <strong className="text-foreground">{t("method.limParams")}</strong>{" "}
+              {t("method.limParamsDesc")}
             </li>
             <li>
-              <strong className="text-foreground">Parameters.</strong> Decay
-              rates, exponent, and weights are evidence-informed but involve
-              judgement.
+              <strong className="text-foreground">{t("method.limPopModel")}</strong>{" "}
+              {t("method.limPopModelDesc")}
             </li>
             <li>
-              <strong className="text-foreground">Resolution.</strong> Grid
-              cells smooth local variation. Coarser tiers use
-              population-weighted averages.
+              <strong className="text-foreground">{t("method.limResolution")}</strong>{" "}
+              {t("method.limResolutionDesc")}
             </li>
           </ul>
         </section>
 
-        {/* Open source */}
+        {/* ─── 8. Open source ─── */}
         <section>
-          <h2 className="mb-3 text-sm font-medium text-foreground">
-            Open source
-          </h2>
-          <p>
-            The full scoring pipeline, API, and frontend are publicly available.
-            Every step can be inspected, reproduced, and improved.
-          </p>
+          <SectionHeading>{t("method.openSource")}</SectionHeading>
+          <p>{t("method.openSourceP1")}</p>
         </section>
       </article>
     </div>

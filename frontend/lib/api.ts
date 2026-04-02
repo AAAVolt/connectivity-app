@@ -72,3 +72,90 @@ export function postStatsArea(
     body: { geometry },
   });
 }
+
+// ── Dashboard API types ──
+
+export interface DashboardSummary {
+  total_cells: number;
+  populated_cells: number;
+  total_population: number;
+  cells_with_scores: number;
+  avg_score: number | null;
+  weighted_avg_score: number | null;
+  median_score: number | null;
+  destination_count: number;
+  transit_stop_count: number;
+  transit_route_count: number;
+  municipality_count: number;
+  comarca_count: number;
+}
+
+export interface ScoreDistributionBucket {
+  range_label: string;
+  range_min: number;
+  range_max: number;
+  cell_count: number;
+  population: number;
+}
+
+export interface PurposeBreakdown {
+  mode: string;
+  purpose: string;
+  purpose_label: string;
+  avg_score: number | null;
+  weighted_avg_score: number | null;
+  avg_travel_time: number | null;
+  cell_count: number;
+}
+
+export interface ServiceCoverage {
+  purpose: string;
+  purpose_label: string;
+  mode: string;
+  total_cells: number;
+  total_population: number;
+  pop_15min: number;
+  pop_30min: number;
+  pop_45min: number;
+  pop_60min: number;
+  pct_pop_15min: number;
+  pct_pop_30min: number;
+  pct_pop_45min: number;
+  pct_pop_60min: number;
+  avg_travel_time: number | null;
+  median_travel_time: number | null;
+}
+
+// ── Dashboard API functions ──
+
+export function getDashboardSummary(
+  departureTime = "08:00",
+): Promise<DashboardSummary> {
+  return apiFetch<DashboardSummary>(
+    `/dashboard/summary?departure_time=${departureTime}`,
+  );
+}
+
+export function getScoreDistribution(
+  departureTime = "08:00",
+): Promise<ScoreDistributionBucket[]> {
+  return apiFetch<ScoreDistributionBucket[]>(
+    `/dashboard/score-distribution?departure_time=${departureTime}`,
+  );
+}
+
+export function getPurposeBreakdown(
+  departureTime = "08:00",
+): Promise<PurposeBreakdown[]> {
+  return apiFetch<PurposeBreakdown[]>(
+    `/dashboard/purpose-breakdown?departure_time=${departureTime}`,
+  );
+}
+
+export function getServiceCoverage(
+  departureTime = "08:00",
+): Promise<ServiceCoverage[]> {
+  return apiFetch<ServiceCoverage[]>(
+    `/dashboard/service-coverage?departure_time=${departureTime}`,
+  );
+}

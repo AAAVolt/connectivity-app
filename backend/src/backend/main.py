@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.boundaries import router as boundaries_router
 from backend.api.cells import router as cells_router
+from backend.api.dashboard import router as dashboard_router
 from backend.api.destinations import router as destinations_router
 from backend.api.health import router as health_router
 from backend.api.stats import router as stats_router
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     application.include_router(health_router)
     application.include_router(boundaries_router)
     application.include_router(cells_router)
+    application.include_router(dashboard_router)
     application.include_router(destinations_router)
     application.include_router(stats_router)
     application.include_router(transit_router)

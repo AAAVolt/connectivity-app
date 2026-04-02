@@ -14,6 +14,17 @@ from backend.db import get_db
 router = APIRouter(prefix="/destinations", tags=["destinations"])
 
 
+@router.get("/types")
+async def get_destination_types(
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, str]]:
+    """Return all destination type codes and labels (for dynamic purpose filters)."""
+    result = await db.execute(
+        text("SELECT code, label FROM destination_types ORDER BY code")
+    )
+    return [{"code": row.code, "label": row.label} for row in result.fetchall()]
+
+
 @router.get("/geojson", response_class=Response)
 async def get_destinations_geojson(
     tenant: TenantContext = Depends(get_tenant),

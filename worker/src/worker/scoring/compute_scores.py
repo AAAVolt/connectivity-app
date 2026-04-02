@@ -1,4 +1,8 @@
-"""Compute connectivity and combined scores for all grid cells."""
+"""Compute connectivity and combined scores for all grid cells.
+
+Processes travel times in batches of origin cells to avoid OOM
+when the full OD matrix is tens of millions of rows.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +20,8 @@ from worker.scoring.impedance import exponential_impedance
 logger = structlog.get_logger()
 
 BATCH_SIZE = 5000
+# Number of origin cells to fetch per scoring chunk (keeps memory bounded).
+CELL_CHUNK = 10_000
 
 
 def compute_scores(
@@ -29,19 +35,6 @@ def compute_scores(
     If departure_time is given (e.g. "08:00"), computes for that slot only.
     If None, discovers all distinct departure_times in travel_times and
     computes for each.
-
-    Pipeline per departure_time slot:
-      1. Fetch travel times joined with destination types.
-      2. Map destination types to purpose buckets.
-      3. Apply impedance per (mode, purpose).
-      4. Aggregate per (cell, mode, purpose).
-      5. Apply diminishing returns (concave transform).
-      6. Normalize per (mode, purpose) to [0, 100].
-      7. Write connectivity_scores.
-      8. Compute and write min travel times.
-      9. Compute combined scores (weighted average of normalized).
-      10. Normalize combined to [0, 100].
-      11. Write combined_scores.
     """
     if config is None:
         config = load_scoring_config()
@@ -49,7 +42,6 @@ def compute_scores(
     log = logger.bind(tenant_id=tenant_id)
     log.info("scoring_start")
 
-    # Discover departure_time slots to process
     if departure_time is not None:
         slots = [departure_time]
     else:
@@ -64,7 +56,6 @@ def compute_scores(
         ).fetchall()
         slots = [r[0] for r in rows]
         if not slots:
-            # Fallback for legacy data without departure_time
             slots = ["08:00"]
 
     log.info("scoring_slots", count=len(slots), slots=slots)
@@ -99,92 +90,149 @@ def _compute_for_slot(
     config: ScoringConfig,
     log: structlog.stdlib.BoundLogger,
 ) -> dict[str, int]:
-    """Compute scores for a single departure_time slot."""
+    """Compute scores for a single departure_time slot.
 
-    # ── 1. Fetch travel times with destination type info ──
-    rows = session.execute(
-        text("""
-            SELECT
-                tt.origin_cell_id,
-                tt.mode,
-                dt.code AS dest_type,
-                tt.travel_time_minutes,
-                d.weight
-            FROM travel_times tt
-            JOIN destinations d ON tt.destination_id = d.id
-            JOIN destination_types dt ON d.type_id = dt.id
-            WHERE tt.tenant_id = :tid
-              AND tt.departure_time = :dep_time
-              AND tt.travel_time_minutes <= :max_tt
-        """),
-        {"tid": tenant_id, "dep_time": departure_time, "max_tt": config.max_travel_time},
-    ).fetchall()
+    Fetches travel times in chunks of CELL_CHUNK origin cells to keep
+    memory usage bounded, then aggregates and normalises across all cells.
+    """
 
-    if not rows:
+    # ── 0. Discover distinct origin cells for this slot ──
+    cell_ids = [
+        r[0]
+        for r in session.execute(
+            text("""
+                SELECT DISTINCT origin_cell_id
+                FROM travel_times
+                WHERE tenant_id = :tid AND departure_time = :dep_time
+                ORDER BY origin_cell_id
+            """),
+            {"tid": tenant_id, "dep_time": departure_time},
+        ).fetchall()
+    ]
+
+    if not cell_ids:
         log.warning("no_travel_times_found", departure_time=departure_time)
         return {"scores_written": 0, "combined_written": 0, "min_travel_times_written": 0}
 
-    df = pd.DataFrame(
-        rows, columns=["cell_id", "mode", "dest_type", "travel_time", "weight"]
-    )
+    log.info("scoring_cells_found", count=len(cell_ids))
 
-    # ── 1b. Fetch destination IDs for min travel time tracking ──
-    rows_with_dest = session.execute(
-        text("""
-            SELECT
-                tt.origin_cell_id,
-                tt.mode,
-                dt.code AS dest_type,
-                tt.travel_time_minutes,
-                tt.destination_id
-            FROM travel_times tt
-            JOIN destinations d ON tt.destination_id = d.id
-            JOIN destination_types dt ON d.type_id = dt.id
-            WHERE tt.tenant_id = :tid
-              AND tt.departure_time = :dep_time
-              AND tt.travel_time_minutes <= :max_tt
-        """),
-        {"tid": tenant_id, "dep_time": departure_time, "max_tt": config.max_travel_time},
-    ).fetchall()
+    # ── 1. Fetch travel times in chunks and compute per-cell raw scores ──
+    all_scores: list[pd.DataFrame] = []
+    all_min_tt: list[pd.DataFrame] = []
 
-    df_full = pd.DataFrame(
-        rows_with_dest,
-        columns=["cell_id", "mode", "dest_type", "travel_time", "destination_id"],
-    )
+    for i in range(0, len(cell_ids), CELL_CHUNK):
+        chunk_ids = cell_ids[i : i + CELL_CHUNK]
+        log.info("scoring_chunk", offset=i, size=len(chunk_ids))
 
-    # ── 2. Map destination type → purpose bucket ──
-    df["purpose"] = df["dest_type"].map(config.purpose_map)
-    df = df.dropna(subset=["purpose"])
-    df_full["purpose"] = df_full["dest_type"].map(config.purpose_map)
-    df_full = df_full.dropna(subset=["purpose"])
+        # Fetch with weights
+        rows = session.execute(
+            text("""
+                SELECT
+                    tt.origin_cell_id,
+                    tt.mode,
+                    dt.code AS dest_type,
+                    tt.travel_time_minutes,
+                    d.weight
+                FROM travel_times tt
+                JOIN destinations d ON tt.destination_id = d.id
+                JOIN destination_types dt ON d.type_id = dt.id
+                WHERE tt.tenant_id = :tid
+                  AND tt.departure_time = :dep_time
+                  AND tt.travel_time_minutes <= :max_tt
+                  AND tt.origin_cell_id = ANY(:cell_ids)
+            """),
+            {
+                "tid": tenant_id,
+                "dep_time": departure_time,
+                "max_tt": config.max_travel_time,
+                "cell_ids": chunk_ids,
+            },
+        ).fetchall()
 
-    if df.empty:
+        if not rows:
+            continue
+
+        df = pd.DataFrame(
+            rows, columns=["cell_id", "mode", "dest_type", "travel_time", "weight"]
+        )
+
+        # Map destination type → purpose
+        df["purpose"] = df["dest_type"].map(config.purpose_map)
+        df = df.dropna(subset=["purpose"])
+        if df.empty:
+            continue
+
+        # Impedance
+        def _contribution(row: pd.Series) -> float:
+            alpha = config.impedance.get(row["mode"], {}).get(row["purpose"], 0.05)
+            return float(row["weight"]) * exponential_impedance(
+                float(row["travel_time"]), alpha
+            )
+
+        df["contribution"] = df.apply(_contribution, axis=1)
+
+        # Aggregate per (cell, mode, purpose)
+        grouped = (
+            df.groupby(["cell_id", "mode", "purpose"])["contribution"]
+            .sum()
+            .reset_index()
+            .rename(columns={"contribution": "raw_score"})
+        )
+        grouped["score"] = grouped["raw_score"].apply(
+            lambda x: concave_transform(x, config.beta)
+        )
+        all_scores.append(grouped)
+
+        # Min travel times (with destination_id)
+        rows_full = session.execute(
+            text("""
+                SELECT
+                    tt.origin_cell_id,
+                    tt.mode,
+                    dt.code AS dest_type,
+                    tt.travel_time_minutes,
+                    tt.destination_id
+                FROM travel_times tt
+                JOIN destinations d ON tt.destination_id = d.id
+                JOIN destination_types dt ON d.type_id = dt.id
+                WHERE tt.tenant_id = :tid
+                  AND tt.departure_time = :dep_time
+                  AND tt.travel_time_minutes <= :max_tt
+                  AND tt.origin_cell_id = ANY(:cell_ids)
+            """),
+            {
+                "tid": tenant_id,
+                "dep_time": departure_time,
+                "max_tt": config.max_travel_time,
+                "cell_ids": chunk_ids,
+            },
+        ).fetchall()
+
+        df_full = pd.DataFrame(
+            rows_full,
+            columns=["cell_id", "mode", "dest_type", "travel_time", "destination_id"],
+        )
+        df_full["purpose"] = df_full["dest_type"].map(config.purpose_map)
+        df_full = df_full.dropna(subset=["purpose"])
+
+        if not df_full.empty:
+            min_tt = (
+                df_full.loc[
+                    df_full.groupby(["cell_id", "mode", "purpose"])["travel_time"].idxmin()
+                ][["cell_id", "mode", "purpose", "travel_time", "destination_id"]]
+                .reset_index(drop=True)
+            )
+            all_min_tt.append(min_tt)
+
+    if not all_scores:
         log.warning("no_mapped_purposes", departure_time=departure_time)
         return {"scores_written": 0, "combined_written": 0, "min_travel_times_written": 0}
 
-    # ── 3. Apply impedance ──
-    def _contribution(row: pd.Series) -> float:
-        alpha = config.impedance.get(row["mode"], {}).get(row["purpose"], 0.05)
-        return float(row["weight"]) * exponential_impedance(
-            float(row["travel_time"]), alpha
-        )
+    # ── 2. Concatenate all chunks ──
+    grouped = pd.concat(all_scores, ignore_index=True)
+    min_tt_all = pd.concat(all_min_tt, ignore_index=True) if all_min_tt else pd.DataFrame()
 
-    df["contribution"] = df.apply(_contribution, axis=1)
-
-    # ── 4. Aggregate per (cell, mode, purpose) ──
-    grouped = (
-        df.groupby(["cell_id", "mode", "purpose"])["contribution"]
-        .sum()
-        .reset_index()
-        .rename(columns={"contribution": "raw_score"})
-    )
-
-    # ── 5. Diminishing returns ──
-    grouped["score"] = grouped["raw_score"].apply(
-        lambda x: concave_transform(x, config.beta)
-    )
-
-    # ── 6. Normalize per (mode, purpose) to [0, 100] ──
+    # ── 3. Normalise per (mode, purpose) to [0, 100] ──
     def _normalize(group: pd.DataFrame) -> pd.DataFrame:
         mn, mx = group["score"].min(), group["score"].max()
         out = group.copy()
@@ -198,7 +246,7 @@ def _compute_for_slot(
         ["mode", "purpose"], group_keys=False
     ).apply(_normalize)
 
-    # ── 7. Write connectivity_scores ──
+    # ── 4. Write connectivity_scores ──
     session.execute(
         text(
             "DELETE FROM connectivity_scores "
@@ -233,14 +281,7 @@ def _compute_for_slot(
             batch,
         )
 
-    # ── 7b. Compute and write min travel times ──
-    min_tt = (
-        df_full.loc[
-            df_full.groupby(["cell_id", "mode", "purpose"])["travel_time"].idxmin()
-        ][["cell_id", "mode", "purpose", "travel_time", "destination_id"]]
-        .reset_index(drop=True)
-    )
-
+    # ── 4b. Write min travel times ──
     session.execute(
         text(
             "DELETE FROM min_travel_times "
@@ -249,34 +290,37 @@ def _compute_for_slot(
         {"tid": tenant_id, "dep_time": departure_time},
     )
 
-    min_records = min_tt.to_dict("records")
-    for i in range(0, len(min_records), BATCH_SIZE):
-        batch = [
-            {
-                "tenant_id": tenant_id,
-                "cell_id": int(r["cell_id"]),
-                "mode": r["mode"],
-                "purpose": r["purpose"],
-                "min_tt": float(r["travel_time"]),
-                "dest_id": int(r["destination_id"]),
-                "departure_time": departure_time,
-            }
-            for r in min_records[i : i + BATCH_SIZE]
-        ]
-        session.execute(
-            text("""
-                INSERT INTO min_travel_times
-                    (tenant_id, cell_id, mode, purpose,
-                     min_travel_time_minutes, nearest_destination_id,
-                     departure_time)
-                VALUES
-                    (:tenant_id, :cell_id, :mode, :purpose,
-                     :min_tt, :dest_id, :departure_time)
-            """),
-            batch,
-        )
+    if not min_tt_all.empty:
+        min_records = min_tt_all.to_dict("records")
+        for i in range(0, len(min_records), BATCH_SIZE):
+            batch = [
+                {
+                    "tenant_id": tenant_id,
+                    "cell_id": int(r["cell_id"]),
+                    "mode": r["mode"],
+                    "purpose": r["purpose"],
+                    "min_tt": float(r["travel_time"]),
+                    "dest_id": int(r["destination_id"]),
+                    "departure_time": departure_time,
+                }
+                for r in min_records[i : i + BATCH_SIZE]
+            ]
+            session.execute(
+                text("""
+                    INSERT INTO min_travel_times
+                        (tenant_id, cell_id, mode, purpose,
+                         min_travel_time_minutes, nearest_destination_id,
+                         departure_time)
+                    VALUES
+                        (:tenant_id, :cell_id, :mode, :purpose,
+                         :min_tt, :dest_id, :departure_time)
+                """),
+                batch,
+            )
+    else:
+        min_records = []
 
-    # ── 8. Combined scores ──
+    # ── 5. Combined scores ──
     weights_rows = []
     for mode, purposes in config.combined_weights.items():
         for purpose, w in purposes.items():
@@ -289,7 +333,6 @@ def _compute_for_slot(
     combined = merged.groupby("cell_id")["weighted"].sum().reset_index()
     combined.columns = ["cell_id", "combined_score"]
 
-    # ── 9. Normalize combined to [0, 100] ──
     c_min, c_max = combined["combined_score"].min(), combined["combined_score"].max()
     if c_max == c_min:
         combined["combined_score_normalized"] = 0.0
@@ -298,7 +341,6 @@ def _compute_for_slot(
             (combined["combined_score"] - c_min) / (c_max - c_min) * 100.0
         )
 
-    # ── 10. Write combined_scores ──
     session.execute(
         text(
             "DELETE FROM combined_scores "

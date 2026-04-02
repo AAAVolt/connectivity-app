@@ -49,18 +49,30 @@ def build_grid(
 @app.command()
 def disaggregate_population(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    no_nucleos: bool = typer.Option(
+        False, "--no-nucleos",
+        help="Disable dasymetric masking (spread population uniformly, ignoring núcleos)",
+    ),
 ) -> None:
-    """Disaggregate population from source polygons to grid cells."""
+    """Disaggregate population from source polygons to grid cells.
+
+    By default uses núcleo polygons (if imported) as a dasymetric mask:
+    only cells overlapping concentrated settlements receive population.
+    Pass --no-nucleos to fall back to plain areal weighting.
+    """
     from worker.pipeline.population import disaggregate_population as _disaggregate
 
     session = get_session()
     try:
-        stats = _disaggregate(session, tenant)
-        typer.echo("Population disaggregated:")
+        stats = _disaggregate(session, tenant, use_nucleos=not no_nucleos)
+        mode = "dasymetric (núcleos)" if stats.get("dasymetric") else "areal weighting"
+        typer.echo(f"Population disaggregated ({mode}):")
         typer.echo(f"  Source population:     {stats['source_population']:.0f}")
         typer.echo(f"  Allocated population:  {stats['allocated_population']:.0f}")
         typer.echo(f"  Cells with population: {stats['cells_with_population']}")
         typer.echo(f"  Total cells:           {stats['total_cells']}")
+        if "loss_pct" in stats:
+            typer.echo(f"  Loss:                  {stats['loss_pct']:.2f}%")
     except Exception as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -348,6 +360,42 @@ def import_population(
                 "WARNING: Population loss exceeds 0.1%!",
                 err=True,
             )
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def import_nucleos(
+    tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
+    shp_path: Path = typer.Option(
+        "/data/raw/nucleos/NUCLEOS_EUSTAT_5000_ETRS89.shp",
+        help="Path to EUSTAT nucleos shapefile (.shp)",
+    ),
+    no_clear: bool = typer.Option(
+        False, "--no-clear", help="Keep existing nucleos"
+    ),
+) -> None:
+    """Import EUSTAT núcleo polygons for dasymetric population masking.
+
+    Filters to Bizkaia and stores both núcleos (concentrated settlements)
+    and diseminados (dispersed).  During disaggregate-population, only
+    cells overlapping núcleos (not diseminados) receive population.
+    """
+    from worker.pipeline.import_nucleos import import_nucleos as _import
+
+    session = get_session()
+    try:
+        typer.echo("Importing núcleos...")
+        stats = _import(
+            session, tenant, shp_path,
+            clear_existing=not no_clear,
+        )
+        typer.echo(f"  Total:       {stats['total']}")
+        typer.echo(f"  Núcleos:     {stats['nucleos']}")
+        typer.echo(f"  Diseminados: {stats['diseminados']}")
     except Exception as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
