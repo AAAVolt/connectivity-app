@@ -1,7 +1,7 @@
 """Population disaggregation: areal weighting from source polygons to grid cells.
 
 Distributes population from source polygons (e.g. núcleos, census tracts) to
-100 m grid cells proportionally by intersection area.
+250 m grid cells proportionally by intersection area.
 """
 
 from __future__ import annotations

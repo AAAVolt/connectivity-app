@@ -16,9 +16,9 @@ modes:
 # Reference date (weekday within GTFS validity period)
 departure_date: "2026-04-14"
 
-# Time-of-day slots: single 08:00 AM peak slot to reduce computation costs.
-departure_time_start: "08:00"
-departure_time_end: "08:00"
+# Time-of-day slots: every 30 minutes across a full day (48 slots).
+departure_time_start: "00:00"
+departure_time_end: "23:30"
 departure_slot_interval_minutes: 30
 
 # R5R time-window: for each slot, sample departures over this many minutes

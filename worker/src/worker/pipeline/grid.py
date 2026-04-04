@@ -1,4 +1,4 @@
-"""Grid generation: create 100 m cells over a tenant's boundary.
+"""Grid generation: create 250 m cells over a tenant's boundary.
 
 The grid is generated in a projected CRS (EPSG:25830 – ETRS89 / UTM 30N)
 for metric accuracy, then stored in WGS84 (EPSG:4326).
@@ -20,7 +20,7 @@ STORAGE_SRID = 4326
 def build_grid(
     session: Session,
     tenant_id: str,
-    cell_size_m: int = 100,
+    cell_size_m: int = 250,
 ) -> int:
     """Generate a grid of square cells over the tenant's boundary.
 

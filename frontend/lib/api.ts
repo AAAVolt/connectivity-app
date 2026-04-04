@@ -159,3 +159,105 @@ export function getServiceCoverage(
     `/dashboard/service-coverage?departure_time=${departureTime}`,
   );
 }
+
+// ── Sociodemographic API types ──
+
+export interface MunicipalityDemographics {
+  muni_code: string;
+  name: string;
+  year: number;
+  pop_total: number;
+  pop_0_17: number;
+  pop_18_25: number;
+  pop_26_64: number;
+  pop_65_plus: number;
+  pct_0_17: number;
+  pct_18_25: number;
+  pct_65_plus: number;
+}
+
+export interface MunicipalityIncome {
+  muni_code: string;
+  name: string;
+  year: number;
+  renta_personal_media: number | null;
+  renta_disponible_media: number | null;
+  renta_index: number | null;
+}
+
+export interface MunicipalityCarOwnership {
+  muni_code: string;
+  name: string;
+  year: number;
+  vehicles_per_inhab: number;
+}
+
+export interface MunicipalitySocioProfile {
+  muni_code: string;
+  name: string;
+  pop_total: number | null;
+  pop_0_17: number | null;
+  pop_18_25: number | null;
+  pop_65_plus: number | null;
+  pct_0_17: number | null;
+  pct_18_25: number | null;
+  pct_65_plus: number | null;
+  renta_personal_media: number | null;
+  renta_disponible_media: number | null;
+  renta_index: number | null;
+  vehicles_per_inhab: number | null;
+  weighted_avg_score: number | null;
+  population: number | null;
+}
+
+export interface FrequencyGeoJSON {
+  type: string;
+  features: Array<{
+    type: string;
+    geometry: { type: string; coordinates: [number, number] };
+    properties: {
+      operator: string;
+      stop_id: string;
+      stop_name: string | null;
+      departures: number;
+      departures_per_hour: number;
+    };
+  }>;
+}
+
+// ── Sociodemographic API functions ──
+
+export function getDemographics(
+  year = 2025,
+): Promise<MunicipalityDemographics[]> {
+  return apiFetch<MunicipalityDemographics[]>(
+    `/sociodemographic/demographics?year=${year}`,
+  );
+}
+
+export function getIncome(year?: number): Promise<MunicipalityIncome[]> {
+  const qs = year ? `?year=${year}` : "";
+  return apiFetch<MunicipalityIncome[]>(`/sociodemographic/income${qs}`);
+}
+
+export function getCarOwnership(
+  year?: number,
+): Promise<MunicipalityCarOwnership[]> {
+  const qs = year ? `?year=${year}` : "";
+  return apiFetch<MunicipalityCarOwnership[]>(
+    `/sociodemographic/car-ownership${qs}`,
+  );
+}
+
+export function getSocioProfiles(): Promise<MunicipalitySocioProfile[]> {
+  return apiFetch<MunicipalitySocioProfile[]>(`/sociodemographic/profiles`);
+}
+
+export function getFrequencyGeoJSON(
+  timeWindow = "07:00-09:00",
+  minDph = 0,
+): Promise<FrequencyGeoJSON> {
+  return apiFetch<FrequencyGeoJSON>(
+    `/sociodemographic/frequency/geojson?time_window=${timeWindow}&min_dph=${minDph}`,
+  );
+}

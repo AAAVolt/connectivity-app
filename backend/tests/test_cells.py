@@ -45,19 +45,19 @@ async def test_get_cell_not_found(_mock_db: AsyncMock) -> None:
 
 @pytest.mark.asyncio
 async def test_geojson_invalid_resolution(_mock_db: AsyncMock) -> None:
-    """resolution must be one of 100, 200, 500, or 1000."""
+    """resolution must be one of 250, 500, or 1000."""
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.get("/cells/geojson?resolution=250")
+        response = await client.get("/cells/geojson?resolution=100")
 
     assert response.status_code == 400
     assert "resolution" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
-async def test_geojson_resolution_200_accepted(_mock_db: AsyncMock) -> None:
-    """resolution=200 should be accepted and execute without error."""
+async def test_geojson_resolution_250_accepted(_mock_db: AsyncMock) -> None:
+    """resolution=250 (base) should be accepted and execute without error."""
     result_mock = MagicMock()
     result_mock.fetchall.return_value = []
     _mock_db.execute.return_value = result_mock
@@ -65,7 +65,7 @@ async def test_geojson_resolution_200_accepted(_mock_db: AsyncMock) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.get("/cells/geojson?resolution=200")
+        response = await client.get("/cells/geojson?resolution=250")
 
     assert response.status_code == 200
     data = response.json()
@@ -74,7 +74,7 @@ async def test_geojson_resolution_200_accepted(_mock_db: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_geojson_resolution_accepted(_mock_db: AsyncMock) -> None:
+async def test_geojson_resolution_500_accepted(_mock_db: AsyncMock) -> None:
     """resolution=500 should be accepted and execute without error."""
     result_mock = MagicMock()
     result_mock.fetchall.return_value = []

@@ -9,6 +9,7 @@ import type { Lang } from "@/lib/i18n";
 
 const NAV_KEYS = [
   { href: "/", key: "nav.dashboard" },
+  { href: "/context", key: "nav.context" },
   { href: "/map", key: "nav.map" },
   { href: "/about", key: "nav.methodology" },
 ] as const;

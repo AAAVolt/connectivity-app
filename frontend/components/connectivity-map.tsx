@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, PanelLeftClose, PanelLeft } from "lucide-react";
 import type { Map as MaplibreMap } from "maplibre-gl";
 import { useTranslation } from "@/lib/i18n";
+import { buildHeightExpr } from "@/lib/map-3d";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const DEMO_TENANT = "00000000-0000-0000-0000-000000000001";
@@ -104,13 +105,11 @@ const DEST_LAYERS = [
 function getResolution(zoom: number): number {
   if (zoom < 9.5) return 1000;
   if (zoom < 11) return 500;
-  if (zoom < 12.5) return 200;
-  return 100;
+  return 250;
 }
 
 const RESOLUTION_LABELS: Record<number, string> = {
-  100: "100 m",
-  200: "200 m",
+  250: "250 m",
   500: "500 m",
   1000: "1 km",
 };
@@ -174,6 +173,103 @@ type MapInstance = {
   remove: () => void;
 };
 
+// ── Frequency color bands ──
+const FREQ_COLORS = {
+  high: "#1a9850",   // 6+ /hr
+  med: "#91cf60",    // 3–6 /hr
+  low: "#fee08b",    // 1–3 /hr
+  veryLow: "#d73027", // <1 /hr
+};
+
+const FREQ_WINDOWS = [
+  "07:00-09:00", "09:00-12:00", "12:00-15:00",
+  "15:00-18:00", "18:00-21:00", "06:00-22:00",
+];
+
+// Social layer color ramps — semantic direction:
+//   elderly:       high % → red (more vulnerable population)
+//   income:        low index → red (less purchasing power)
+//   cars:          low veh/inhab → red (more transit-dependent)
+//   vulnerability: high index → red (composite vulnerability)
+const SOCIAL_PAINT: Record<string, { prop: string; stops: [number, string][]; label: string }> = {
+  elderly: {
+    prop: "pct_65_plus",
+    stops: [[15, "#ffffcc"], [20, "#fed976"], [24, "#feb24c"], [28, "#fd8d3c"], [33, "#e31a1c"], [40, "#800026"]],
+    label: "% 65+",
+  },
+  income: {
+    prop: "renta_index",
+    stops: [[60, "#800026"], [75, "#e31a1c"], [90, "#fd8d3c"], [100, "#ffffcc"], [110, "#addd8e"], [130, "#006837"]],
+    label: "Index",
+  },
+  cars: {
+    prop: "vehicles_per_inhab",
+    stops: [[0.3, "#800026"], [0.4, "#e31a1c"], [0.5, "#fd8d3c"], [0.6, "#ffffcc"], [0.75, "#addd8e"], [1.0, "#006837"]],
+    label: "Veh/inhab",
+  },
+  vulnerability: {
+    prop: "vulnerability",
+    stops: [[0.1, "#006837"], [0.25, "#addd8e"], [0.35, "#ffffcc"], [0.45, "#fd8d3c"], [0.55, "#e31a1c"], [0.7, "#800026"]],
+    label: "Index",
+  },
+};
+
+function applySocialPaint(map: MaplibreMap, layer: string) {
+  const cfg = SOCIAL_PAINT[layer];
+  if (!cfg || !map.getLayer("social-fill")) return;
+
+  const colorExpr: unknown[] = [
+    "interpolate", ["linear"],
+    ["coalesce", ["get", cfg.prop], 0],
+  ];
+  for (const [stop, color] of cfg.stops) {
+    colorExpr.push(stop, color);
+  }
+  map.setPaintProperty("social-fill", "fill-color", colorExpr);
+}
+
+/** Build consistent popup HTML for municipality clicks (both boundary & social-fill layers). */
+function buildMuniPopupHtml(
+  name: string,
+  p: Record<string, unknown> | null,
+  t: (key: string) => string,
+): string {
+  if (!p) return `<strong style="font-size:13px">${name}</strong>`;
+
+  const val = (key: string, decimals: number, suffix = ""): string => {
+    const v = p[key];
+    return v != null ? Number(v).toFixed(decimals) + suffix : "—";
+  };
+  const pop = p.pop_total != null
+    ? Math.round(Number(p.pop_total)).toLocaleString()
+    : p.population != null
+      ? Math.round(Number(p.population)).toLocaleString()
+      : "—";
+
+  return (
+    `<strong style="font-size:13px">${name}</strong>` +
+    `<div style="margin-top:6px;font-size:11px;line-height:1.7">` +
+    `<div><b>${t("popup.population")}:</b> ${pop}</div>` +
+    `<div><b>${t("popup.connectivity")}:</b> ${val("weighted_avg_score", 1)}/100</div>` +
+    `<div style="border-top:1px solid #eee;margin:3px 0;padding-top:3px">` +
+    `<div><b>${t("popup.elderly")}:</b> ${val("pct_65_plus", 1, "%")}</div>` +
+    `<div><b>${t("popup.youth")}:</b> ${val("pct_0_17", 1, "%")}</div>` +
+    `<div><b>${t("popup.youngAdults")}:</b> ${val("pct_18_25", 1, "%")}</div>` +
+    `</div>` +
+    `<div style="border-top:1px solid #eee;margin:3px 0;padding-top:3px">` +
+    `<div><b>${t("popup.incomeIndex")}:</b> ${val("renta_index", 1)}</div>` +
+    `<div><b>${t("popup.carsPerInhab")}:</b> ${val("vehicles_per_inhab", 2)}</div>` +
+    `</div>` +
+    `<div style="border-top:1px solid #eee;margin:3px 0;padding-top:3px">` +
+    `<div><b>${t("popup.vulnerability")}:</b> ${val("vulnerability", 2)}</div>` +
+    `</div>` +
+    `</div>`
+  );
+}
+
+// ── Default extrusion height (meters) for max score ──
+const DEFAULT_EXTRUSION_HEIGHT = 400;
+
 const BASE_LAYER_MAPPING: Record<string, string[]> = {
   cells: ["cells-fill", "cells-hatch", "cells-outline"],
   region: ["region-boundary"],
@@ -181,6 +277,7 @@ const BASE_LAYER_MAPPING: Record<string, string[]> = {
   municipalities: ["municipalities-boundary"],
   nucleos: ["nucleos-fill", "nucleos-outline"],
   labels: ["comarcas-labels", "municipalities-labels"],
+  frequency: ["freq-circles"],
 };
 
 export default function ConnectivityMap() {
@@ -219,7 +316,16 @@ export default function ConnectivityMap() {
   );
   const [showRoutes, setShowRoutes] = useState(false);
   const [showStops, setShowStops] = useState(false);
+  const [showFrequency, setShowFrequency] = useState(false);
+  const [freqWindow, setFreqWindow] = useState("07:00-09:00");
+  const [socialLayer, setSocialLayer] = useState<string | null>(null);
   const [fillOpacity, setFillOpacity] = useState(0.7);
+
+  // 3D mode
+  const [is3D, setIs3D] = useState(false);
+  const [showTerrain, setShowTerrain] = useState(false);
+  const [showBuildings, setShowBuildings] = useState(false);
+  const [extrusionHeight, setExtrusionHeight] = useState(DEFAULT_EXTRUSION_HEIGHT);
 
   // Panel collapse
   const [panelOpen, setPanelOpen] = useState(true);
@@ -229,6 +335,7 @@ export default function ConnectivityMap() {
     metric: true,
     time: true,
     destination: true,
+    social: false,
     layers: false,
     destinations: false,
     transit: false,
@@ -278,6 +385,100 @@ export default function ConnectivityMap() {
       }
     }
   }, [operators, showRoutes, showStops, mapReady]);
+
+  // Reactive frequency layer
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    if (!showFrequency) {
+      if (map.getLayer("freq-circles")) {
+        map.setLayoutProperty("freq-circles", "visibility", "none");
+      }
+      return;
+    }
+
+    // Fetch frequency GeoJSON for the selected time window
+    const controller = new AbortController();
+    fetch(
+      `${API_BASE}/sociodemographic/frequency/geojson?time_window=${freqWindow}&min_dph=0`,
+      { headers: { "X-Tenant-ID": DEMO_TENANT }, signal: controller.signal },
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data) return;
+        const mlMap = map as unknown as MaplibreMap;
+        const source = mlMap.getSource("frequency");
+        if (source && "setData" in source) {
+          (source as { setData: (d: unknown) => void }).setData(data);
+        }
+        if (map.getLayer("freq-circles")) {
+          map.setLayoutProperty("freq-circles", "visibility", "visible");
+        }
+      })
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+      });
+
+    return () => controller.abort();
+  }, [showFrequency, freqWindow, mapReady]);
+
+  // Social choropleth layer reactivity
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const mlMap = map as unknown as MaplibreMap;
+
+    if (!socialLayer) {
+      if (map.getLayer("social-fill")) map.setLayoutProperty("social-fill", "visibility", "none");
+      if (map.getLayer("social-outline")) map.setLayoutProperty("social-outline", "visibility", "none");
+      return;
+    }
+
+    // Load data if source doesn't exist yet
+    const source = mlMap.getSource("social-munis");
+    if (!source) {
+      fetch(`${API_BASE}/sociodemographic/municipalities/geojson`, {
+        headers: { "X-Tenant-ID": DEMO_TENANT },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data) return;
+          mlMap.addSource("social-munis", { type: "geojson", data });
+          mlMap.addLayer({
+            id: "social-fill", type: "fill", source: "social-munis",
+            paint: { "fill-color": "#888", "fill-opacity": 0.55 },
+          }, "cells-fill");
+          mlMap.addLayer({
+            id: "social-outline", type: "line", source: "social-munis",
+            paint: { "line-color": "#333", "line-width": 1 },
+          }, "cells-fill");
+          applySocialPaint(mlMap, socialLayer);
+        })
+        .catch(() => {});
+    } else {
+      if (map.getLayer("social-fill")) {
+        map.setLayoutProperty("social-fill", "visibility", "visible");
+        map.setLayoutProperty("social-outline", "visibility", "visible");
+        applySocialPaint(mlMap, socialLayer);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socialLayer, mapReady]);
+
+  const handleToggleFrequency = useCallback(() => {
+    setShowFrequency((prev) => {
+      const next = !prev;
+      if (next) {
+        // Auto-select all operators when enabling
+        setOperators((ops) =>
+          ops.every((o) => !o.visible) ? ops.map((o) => ({ ...o, visible: true })) : ops,
+        );
+      }
+      return next;
+    });
+  }, []);
 
   const handleToggleRoutes = useCallback(() => {
     setShowRoutes((prev) => {
@@ -395,15 +596,23 @@ export default function ConnectivityMap() {
       });
 
     // Update the fill color expression to match the active metric
+    const colorExpr = metric === "travel_time"
+      ? TRAVEL_TIME_STEP_EXPR
+      : [
+          "interpolate", ["linear"],
+          ["coalesce", ["get", "score"], 0],
+          ...SCORE_COLORS.flatMap(([stop, color]) => [stop, color]),
+        ];
+
     if (map.getLayer("cells-fill")) {
-      const expr = metric === "travel_time"
-        ? TRAVEL_TIME_STEP_EXPR
-        : [
-            "interpolate", ["linear"],
-            ["coalesce", ["get", "score"], 0],
-            ...SCORE_COLORS.flatMap(([stop, color]) => [stop, color]),
-          ];
-      mlMap.setPaintProperty("cells-fill", "fill-color", expr);
+      mlMap.setPaintProperty("cells-fill", "fill-color", colorExpr);
+    }
+
+    // Sync 3D extrusion color + height to match the active metric
+    if (map.getLayer("cells-3d")) {
+      mlMap.setPaintProperty("cells-3d", "fill-extrusion-color", colorExpr);
+      const heightExpr = buildHeightExpr(metric, extrusionHeight);
+      mlMap.setPaintProperty("cells-3d", "fill-extrusion-height", heightExpr);
     }
 
     // Adjust outline width – thicker for coarse grids, still visible for 100 m
@@ -413,7 +622,7 @@ export default function ConnectivityMap() {
     }
 
     return () => controller.abort();
-  }, [selectedPurpose, metric, departureTime, resolution, mapReady]);
+  }, [selectedPurpose, metric, departureTime, resolution, extrusionHeight, mapReady]);
 
   // ── Opacity sync ──
   useEffect(() => {
@@ -428,7 +637,70 @@ export default function ConnectivityMap() {
     set("cells-fill", "fill-opacity", fillOpacity);
     set("cells-hatch", "fill-opacity", fillOpacity);
     set("cells-outline", "line-opacity", fillOpacity);
+    set("cells-3d", "fill-extrusion-opacity", fillOpacity);
   }, [fillOpacity, mapReady]);
+
+  // ── 3D mode toggle (extrusion layers + buildings) ──
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    try {
+      if (map.getLayer("cells-fill")) {
+        map.setLayoutProperty("cells-fill", "visibility", "visible");
+      }
+      if (map.getLayer("cells-3d")) {
+        map.setLayoutProperty("cells-3d", "visibility", is3D ? "visible" : "none");
+      }
+      if (map.getLayer("sky")) {
+        map.setLayoutProperty("sky", "visibility", is3D ? "visible" : "none");
+      }
+      if (map.getLayer("3d-buildings")) {
+        map.setLayoutProperty("3d-buildings", "visibility", showBuildings ? "visible" : "none");
+      }
+    } catch (err) {
+      console.error("[3D] layer toggle failed:", err);
+    }
+  }, [is3D, showBuildings, mapReady]);
+
+  // ── Terrain toggle ──
+  // DEM source is in the initial style, so tiles are already loading.
+  // setTerrain exists on MaplibreMap (v4.1+) — call it directly.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const mlMap = map as unknown as MaplibreMap;
+
+    try {
+      if (showTerrain) {
+        mlMap.setTerrain({ source: "terrain-dem", exaggeration: 1.5 });
+        if (map.getLayer("hillshade-layer")) {
+          map.setLayoutProperty("hillshade-layer", "visibility", "visible");
+        }
+        // Auto-tilt so the user can see the elevation
+        mlMap.easeTo({ pitch: 50, duration: 800 });
+      } else {
+        mlMap.setTerrain(null);
+        if (map.getLayer("hillshade-layer")) {
+          map.setLayoutProperty("hillshade-layer", "visibility", "none");
+        }
+        mlMap.easeTo({ pitch: 0, bearing: 0, duration: 800 });
+      }
+    } catch (err) {
+      console.error("[terrain]", err);
+    }
+  }, [showTerrain, mapReady]);
+
+  // ── 3D extrusion height sync ──
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !is3D) return;
+    const mlMap = map as unknown as MaplibreMap;
+    if (!map.getLayer("cells-3d")) return;
+
+    const heightExpr = buildHeightExpr(metric, extrusionHeight);
+    mlMap.setPaintProperty("cells-3d", "fill-extrusion-height", heightExpr);
+  }, [extrusionHeight, metric, is3D, mapReady]);
 
   // ── Map initialisation ──
   useEffect(() => {
@@ -453,17 +725,66 @@ export default function ConnectivityMap() {
                 tileSize: 256,
                 attribution: "&copy; OpenStreetMap contributors",
               },
+              "terrain-dem": {
+                type: "raster-dem" as const,
+                tiles: ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],
+                encoding: "terrarium" as const,
+                tileSize: 256,
+                maxzoom: 15,
+              },
+              "hillshade-dem": {
+                type: "raster-dem" as const,
+                tiles: ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],
+                encoding: "terrarium" as const,
+                tileSize: 256,
+                maxzoom: 15,
+              },
+              "openfree": {
+                type: "vector" as const,
+                url: "https://tiles.openfreemap.org/planet",
+              },
             },
-            layers: [{
-              id: "osm-tiles", type: "raster" as const, source: "osm",
-              minzoom: 0, maxzoom: 19,
-            }],
+            layers: [
+              {
+                id: "osm-tiles", type: "raster" as const, source: "osm",
+                minzoom: 0, maxzoom: 19,
+              },
+              {
+                id: "hillshade-layer", type: "hillshade" as const, source: "hillshade-dem",
+                layout: { visibility: "none" as const },
+                paint: {
+                  "hillshade-shadow-color": "#473B24",
+                  "hillshade-illumination-anchor": "map" as const,
+                  "hillshade-exaggeration": 0.25,
+                },
+              },
+              {
+                id: "3d-buildings", type: "fill-extrusion" as const, source: "openfree",
+                "source-layer": "building",
+                layout: { visibility: "none" as const },
+                minzoom: 14,
+                filter: ["!=", ["get", "hide_3d"], true],
+                paint: {
+                  "fill-extrusion-color": [
+                    "interpolate", ["linear"], ["get", "render_height"],
+                    0, "#e8e0d8",
+                    20, "#d4c8b8",
+                    50, "#bfb09a",
+                    100, "#a89880",
+                  ],
+                  "fill-extrusion-height": ["coalesce", ["get", "render_height"], 5],
+                  "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+                  "fill-extrusion-opacity": 0.7,
+                },
+              },
+            ],
           },
           center: DEFAULT_CENTER,
           zoom: DEFAULT_ZOOM,
+          maxPitch: 85,
         });
 
-        map.addControl(new maplibregl.NavigationControl(), "top-right");
+        map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
         mapRef.current = map as unknown as MapInstance;
 
         // Track zoom level → resolution changes
@@ -658,6 +979,71 @@ export default function ConnectivityMap() {
               }
             } catch { /* optional */ }
 
+            // 9. Frequency layer (starts empty, loaded on demand)
+            map.addSource("frequency", {
+              type: "geojson",
+              data: { type: "FeatureCollection" as const, features: [] },
+            });
+            map.addLayer({
+              id: "freq-circles", type: "circle", source: "frequency",
+              layout: { visibility: "none" },
+              paint: {
+                "circle-radius": [
+                  "interpolate", ["linear"],
+                  ["coalesce", ["get", "departures_per_hour"], 0],
+                  0, 3, 3, 5, 6, 8, 15, 14, 30, 20,
+                ],
+                "circle-color": [
+                  "step",
+                  ["coalesce", ["get", "departures_per_hour"], 0],
+                  "#d73027",    // <1
+                  1, "#fee08b", // 1-3
+                  3, "#91cf60", // 3-6
+                  6, "#1a9850", // 6+
+                ],
+                "circle-opacity": 0.8,
+                "circle-stroke-color": "#fff",
+                "circle-stroke-width": 0.5,
+              },
+            });
+
+            // 10. 3D cells extrusion layer (hidden by default, toggled via 3D mode)
+            // Filter out zero/null scores to reduce GPU geometry count
+            map.addLayer({
+              id: "cells-3d",
+              type: "fill-extrusion",
+              source: "cells",
+              layout: { visibility: "none" },
+              filter: [">", ["coalesce", ["get", "score"], 0], 0],
+              maxzoom: 13,
+              paint: {
+                "fill-extrusion-color": [
+                  "interpolate", ["linear"],
+                  ["coalesce", ["get", "score"], 0],
+                  ...SCORE_COLORS.flatMap(([stop, color]) => [stop, color]),
+                ] as unknown as string,
+                "fill-extrusion-height": [
+                  "*", ["coalesce", ["get", "score"], 0], DEFAULT_EXTRUSION_HEIGHT / 100,
+                ] as unknown as number,
+                "fill-extrusion-base": 0,
+                "fill-extrusion-opacity": 0.75,
+              },
+            } as Parameters<MaplibreMap["addLayer"]>[0]);
+
+            // 11. Sky layer (hidden by default, visible in 3D mode)
+            try {
+              map.addLayer({
+                id: "sky",
+                type: "sky",
+                layout: { visibility: "none" },
+                paint: {
+                  "sky-type": "atmosphere",
+                  "sky-atmosphere-sun": [0.0, 90.0],
+                  "sky-atmosphere-sun-intensity": 15,
+                },
+              } as unknown as Parameters<MaplibreMap["addLayer"]>[0]);
+            } catch { /* sky layer optional — may not be supported in all builds */ }
+
             setMapReady(true);
             setStatus("");
           } catch (err) {
@@ -667,6 +1053,9 @@ export default function ConnectivityMap() {
 
         // ── Interactions ──
         map.on("click", "cells-fill", (e) => {
+          if (e.features?.[0]) setSelectedCell(e.features[0].properties as CellProperties);
+        });
+        map.on("click", "cells-3d", (e) => {
           if (e.features?.[0]) setSelectedCell(e.features[0].properties as CellProperties);
         });
 
@@ -698,9 +1087,28 @@ export default function ConnectivityMap() {
 
         map.on("click", "municipalities-boundary", (e) => {
           if (!e.features?.[0]) return;
-          new maplibregl.Popup().setLngLat(e.lngLat)
-            .setHTML(`<strong>${e.features[0].properties?.name ?? ""}</strong>`)
-            .addTo(map);
+          const props = e.features[0].properties;
+          const muniName = props?.name ?? "";
+          const muniCode = props?.muni_code ?? "";
+
+          // Fetch socio profile for this municipality
+          fetch(`${API_BASE}/sociodemographic/profiles`, {
+            headers: { "X-Tenant-ID": DEMO_TENANT },
+          })
+            .then((res) => (res.ok ? res.json() : []))
+            .then((profiles: Array<Record<string, unknown>>) => {
+              const p = profiles.find(
+                (pr) => pr.muni_code === muniCode || pr.name === muniName,
+              );
+              new maplibregl.Popup().setLngLat(e.lngLat)
+                .setHTML(buildMuniPopupHtml(muniName, p ?? null, t))
+                .addTo(map);
+            })
+            .catch(() => {
+              new maplibregl.Popup().setLngLat(e.lngLat)
+                .setHTML(`<strong>${muniName}</strong>`)
+                .addTo(map);
+            });
         });
 
         map.on("click", "nucleos-fill", (e) => {
@@ -711,7 +1119,30 @@ export default function ConnectivityMap() {
             .addTo(map);
         });
 
-        const clickable = ["cells-fill", "transit-stops", "transit-routes", "municipalities-boundary", "nucleos-fill", ...DEST_LAYERS.map((d) => d.id)];
+        map.on("click", "freq-circles", (e) => {
+          if (!e.features?.[0]) return;
+          const p = e.features[0].properties;
+          const dph = Number(p?.departures_per_hour ?? 0).toFixed(1);
+          new maplibregl.Popup().setLngLat(e.lngLat)
+            .setHTML(
+              `<strong>${p?.stop_name ?? "Stop"}</strong><br/>` +
+              `<span style="color:#666;font-size:12px">${p?.operator ?? ""}</span><br/>` +
+              `<span style="font-size:12px"><b>${dph}</b> dep/hr &middot; ${p?.departures ?? 0} departures</span>`,
+            )
+            .addTo(map);
+        });
+
+        // Social municipality fill click — show full socio profile
+        map.on("click", "social-fill", (e) => {
+          if (!e.features?.[0]) return;
+          const p = e.features[0].properties;
+          const name = p?.name ?? "";
+          new maplibregl.Popup().setLngLat(e.lngLat)
+            .setHTML(buildMuniPopupHtml(name, p ?? null, t))
+            .addTo(map);
+        });
+
+        const clickable = ["cells-fill", "cells-3d", "social-fill", "transit-stops", "transit-routes", "freq-circles", "municipalities-boundary", "nucleos-fill", ...DEST_LAYERS.map((d) => d.id)];
         for (const lid of clickable) {
           map.on("mouseenter", lid, () => { map.getCanvas().style.cursor = "pointer"; });
           map.on("mouseleave", lid, () => { map.getCanvas().style.cursor = ""; });
@@ -905,6 +1336,50 @@ export default function ConnectivityMap() {
             </div>
           </Section>
 
+          {/* Social Layer */}
+          <Section title={t("map.socialLayer")} open={openSections.social} onToggle={() => toggleSection("social")}>
+            <div className="space-y-1">
+              {[
+                { value: null, labelKey: "map.socialNone" },
+                { value: "elderly", labelKey: "map.socialElderly" },
+                { value: "income", labelKey: "map.socialIncome" },
+                { value: "cars", labelKey: "map.socialCars" },
+                { value: "vulnerability", labelKey: "map.socialVuln" },
+              ].map((opt) => (
+                <button
+                  key={opt.labelKey}
+                  onClick={() => setSocialLayer(opt.value)}
+                  className={`w-full rounded px-2.5 py-1.5 text-left text-xs font-medium transition-colors ${
+                    socialLayer === opt.value
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary/50 text-secondary-foreground hover:bg-secondary"
+                  }`}
+                >
+                  {t(opt.labelKey)}
+                </button>
+              ))}
+            </div>
+            {/* Legend */}
+            {socialLayer && SOCIAL_PAINT[socialLayer] && (
+              <div className="mt-3 pt-2 border-t">
+                <p className="text-[10px] text-muted-foreground mb-1.5">{t(`map.social${socialLayer.charAt(0).toUpperCase() + socialLayer.slice(1)}`)}</p>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-muted-foreground">{t("map.socialLegendLow")}</span>
+                  <div className="flex h-3 flex-1 rounded-sm overflow-hidden">
+                    {SOCIAL_PAINT[socialLayer].stops.map(([, color]) => (
+                      <div key={color} className="flex-1" style={{ backgroundColor: color }} />
+                    ))}
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">{t("map.socialLegendHigh")}</span>
+                </div>
+                <div className="flex justify-between text-[9px] text-muted-foreground mt-0.5">
+                  <span>{SOCIAL_PAINT[socialLayer].stops[0][0]}</span>
+                  <span>{SOCIAL_PAINT[socialLayer].stops[SOCIAL_PAINT[socialLayer].stops.length - 1][0]}</span>
+                </div>
+              </div>
+            )}
+          </Section>
+
           {/* Layers */}
           <Section title={t("map.layers")} open={openSections.layers} onToggle={() => toggleSection("layers")}>
             {baseLayers.map((layer) => (
@@ -936,6 +1411,75 @@ export default function ConnectivityMap() {
             </div>
           </Section>
 
+          {/* 3D View */}
+          <Section title={t("map.3dView")} open={openSections.threeD} onToggle={() => toggleSection("threeD")}>
+            <label className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
+              <input
+                type="checkbox"
+                checked={is3D}
+                onChange={() => setIs3D((v) => !v)}
+                className="rounded border-input"
+              />
+              <span className="font-medium">{t("map.3dEnable")}</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
+              <input
+                type="checkbox"
+                checked={showBuildings}
+                onChange={() => setShowBuildings((v) => !v)}
+                className="rounded border-input"
+              />
+              <span className="font-medium">{t("map.3dBuildings")}</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
+              <input
+                type="checkbox"
+                checked={showTerrain}
+                onChange={() => setShowTerrain((v) => !v)}
+                className="rounded border-input"
+              />
+              <span className="font-medium">{t("map.3dTerrain")}</span>
+            </label>
+
+            {is3D && (
+              <div className="mt-2 space-y-2.5">
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-muted-foreground">{t("map.3dHeight")}</span>
+                    <span className="text-xs font-mono text-muted-foreground w-10 text-right">
+                      {extrusionHeight}m
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={50}
+                    max={1000}
+                    step={50}
+                    value={extrusionHeight}
+                    onChange={(e) => setExtrusionHeight(Number(e.target.value))}
+                    className="w-full h-1.5 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+                  />
+                  <div className="flex justify-between text-[9px] text-muted-foreground mt-0.5">
+                    <span>{t("map.3dFlat")}</span>
+                    <span>{t("map.3dTall")}</span>
+                  </div>
+                </div>
+
+                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                  {t("map.3dHint")}
+                </p>
+                {resolution <= 200 && (
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-relaxed">
+                    {t("map.3dZoomNote")}
+                  </p>
+                )}
+              </div>
+            )}
+          </Section>
+
           {/* Destination markers */}
           <Section title={t("map.destinations")} open={openSections.destinations} onToggle={() => toggleSection("destinations")}>
             {destToggles.map((dt) => (
@@ -957,7 +1501,7 @@ export default function ConnectivityMap() {
 
           {/* Public Transport */}
           <Section title={t("map.publicTransportSection")} open={openSections.transit} onToggle={() => toggleSection("transit")}>
-            {/* Global Routes / Stops toggle */}
+            {/* Global Routes / Stops / Frequency toggle */}
             <div className="flex gap-1 mb-2.5">
               <button
                 onClick={handleToggleRoutes}
@@ -979,7 +1523,54 @@ export default function ConnectivityMap() {
               >
                 {t("map.stops")}
               </button>
+              <button
+                onClick={handleToggleFrequency}
+                className={`flex-1 rounded px-2 py-1.5 text-xs font-medium transition-colors ${
+                  showFrequency
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-secondary/50 text-secondary-foreground hover:bg-secondary"
+                }`}
+              >
+                {t("map.freqToggle")}
+              </button>
             </div>
+
+            {/* Frequency time window */}
+            {showFrequency && (
+              <div className="mb-2.5 space-y-1.5">
+                <span className="text-[10px] text-muted-foreground">{t("map.freqWindow")}</span>
+                <div className="flex flex-wrap gap-1">
+                  {FREQ_WINDOWS.map((tw) => (
+                    <button
+                      key={tw}
+                      onClick={() => setFreqWindow(tw)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                        freqWindow === tw
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-secondary/50 text-secondary-foreground hover:bg-secondary"
+                      }`}
+                    >
+                      {tw}
+                    </button>
+                  ))}
+                </div>
+                {/* Frequency legend */}
+                <div className="pt-1.5 space-y-0.5">
+                  <p className="text-[10px] text-muted-foreground">{t("map.freqLegend")}</p>
+                  {[
+                    { color: FREQ_COLORS.high, label: t("map.freqHigh") },
+                    { color: FREQ_COLORS.med, label: t("map.freqMed") },
+                    { color: FREQ_COLORS.low, label: t("map.freqLow") },
+                    { color: FREQ_COLORS.veryLow, label: t("map.freqVeryLow") },
+                  ].map((b) => (
+                    <div key={b.label} className="flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: b.color }} />
+                      <span className="text-[10px] text-muted-foreground">{b.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Per-operator checkboxes */}
             {(showRoutes || showStops) && (

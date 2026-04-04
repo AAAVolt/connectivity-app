@@ -82,8 +82,7 @@ export default function MethodologyPage() {
           <ul className="mt-2 ml-4 list-disc space-y-1">
             <li><strong className="text-foreground">{t("method.zoom1km").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom1km").split(" \u2014 ")[1]}</li>
             <li><strong className="text-foreground">{t("method.zoom500m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom500m").split(" \u2014 ")[1]}</li>
-            <li><strong className="text-foreground">{t("method.zoom200m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom200m").split(" \u2014 ")[1]}</li>
-            <li><strong className="text-foreground">{t("method.zoom100m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom100m").split(" \u2014 ")[1]}</li>
+            <li><strong className="text-foreground">{t("method.zoom250m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom250m").split(" \u2014 ")[1]}</li>
           </ul>
         </section>
 
@@ -309,7 +308,100 @@ export default function MethodologyPage() {
           <p className="mt-3">{t("method.dashboardP2")}</p>
         </section>
 
-        {/* ─── 6. Data sources ─── */}
+        {/* ─── 6. Sociodemographic layer ─── */}
+        <section>
+          <SectionHeading>{t("method.socioTitle")}</SectionHeading>
+          <p dangerouslySetInnerHTML={{ __html: t("method.socioIntro") }} />
+
+          <p className="mt-4 mb-2 font-medium text-foreground">{t("method.socioIndicators")}</p>
+          <div className="overflow-x-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.socioIndicator")}</th>
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.socioSource")}</th>
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.socioInterpretation")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.socioElderly")}</td>
+                  <td className="px-3 py-2">{t("method.socioElderlySource")}</td>
+                  <td className="px-3 py-2" dangerouslySetInnerHTML={{ __html: t("method.socioElderlyInterp") }} />
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.socioIncome")}</td>
+                  <td className="px-3 py-2">{t("method.socioIncomeSource")}</td>
+                  <td className="px-3 py-2" dangerouslySetInnerHTML={{ __html: t("method.socioIncomeInterp") }} />
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.socioCars")}</td>
+                  <td className="px-3 py-2">{t("method.socioCarsSource")}</td>
+                  <td className="px-3 py-2" dangerouslySetInnerHTML={{ __html: t("method.socioCarsInterp") }} />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p className="mt-5 mb-2 font-medium text-foreground">{t("method.socioVulnTitle")}</p>
+          <p dangerouslySetInnerHTML={{ __html: t("method.socioVulnP1") }} />
+          <div className="my-3 rounded-md border bg-muted/30 px-4 py-2.5 text-center font-mono text-xs">
+            V = 0.4 &times; (1 &minus; connectivity<sub>norm</sub>) + 0.2 &times; elderly<sub>norm</sub> + 0.2 &times; (1 &minus; income<sub>norm</sub>) + 0.2 &times; (1 &minus; cars<sub>norm</sub>)
+          </div>
+          <p dangerouslySetInnerHTML={{ __html: t("method.socioVulnP2") }} />
+
+          <div className="mt-3 overflow-x-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.socioVulnDimension")}</th>
+                  <th className="px-3 py-2 text-right font-medium text-foreground">{t("method.combinedWeight")}</th>
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("method.socioVulnDirection")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.socioVulnConn")}</td>
+                  <td className="px-3 py-2 text-right font-mono">40%</td>
+                  <td className="px-3 py-2">{t("method.socioVulnConnDir")}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.socioVulnElderly")}</td>
+                  <td className="px-3 py-2 text-right font-mono">20%</td>
+                  <td className="px-3 py-2">{t("method.socioVulnElderlyDir")}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.socioVulnIncome")}</td>
+                  <td className="px-3 py-2 text-right font-mono">20%</td>
+                  <td className="px-3 py-2">{t("method.socioVulnIncomeDir")}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-medium text-foreground">{t("method.socioVulnCars")}</td>
+                  <td className="px-3 py-2 text-right font-mono">20%</td>
+                  <td className="px-3 py-2">{t("method.socioVulnCarsDir")}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p className="mt-4 mb-2 font-medium text-foreground">{t("method.socioColors")}</p>
+          <p>{t("method.socioColorsP1")}</p>
+          <ul className="mt-2 ml-4 list-disc space-y-1">
+            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsElderly") }} />
+            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsIncome") }} />
+            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsCars") }} />
+            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsVuln") }} />
+          </ul>
+
+          <p className="mt-4 mb-2 font-medium text-foreground">{t("method.socioLimTitle")}</p>
+          <ul className="ml-4 list-disc space-y-1">
+            <li>{t("method.socioLim1")}</li>
+            <li>{t("method.socioLim2")}</li>
+            <li>{t("method.socioLim3")}</li>
+          </ul>
+        </section>
+
+        {/* ─── 7. Data sources ─── */}
         <section>
           <SectionHeading>{t("method.dataSources")}</SectionHeading>
           <div className="overflow-x-auto rounded-md border">
@@ -346,7 +438,7 @@ export default function MethodologyPage() {
           </div>
         </section>
 
-        {/* ─── 7. Limitations ─── */}
+        {/* ─── 8. Limitations ─── */}
         <section>
           <SectionHeading>{t("method.limitations")}</SectionHeading>
           <ul className="ml-4 list-disc space-y-2">
@@ -377,7 +469,7 @@ export default function MethodologyPage() {
           </ul>
         </section>
 
-        {/* ─── 8. Open source ─── */}
+        {/* ─── 9. Open source ─── */}
         <section>
           <SectionHeading>{t("method.openSource")}</SectionHeading>
           <p>{t("method.openSourceP1")}</p>

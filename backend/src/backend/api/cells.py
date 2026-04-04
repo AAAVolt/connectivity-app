@@ -18,7 +18,7 @@ router = APIRouter(prefix="/cells", tags=["cells"])
 
 _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 DEFAULT_DEPARTURE_TIME = "08:00"
-ALLOWED_RESOLUTIONS = (100, 200, 500, 1000)
+ALLOWED_RESOLUTIONS = (250, 500, 1000)
 
 
 class TransportMode(str, Enum):
@@ -58,7 +58,7 @@ def _build_base_query(
     metric: Metric,
     params: dict[str, object],
 ) -> str:
-    """Return SQL selecting ``(id, cell_code, population, score, geom)`` per 100 m cell.
+    """Return SQL selecting ``(id, cell_code, population, score, geom)`` per 250 m cell.
 
     Mutates *params* to add bind variables for the chosen filters.
     The returned query uses raw ``gc.geom`` (not GeoJSON) so the caller
@@ -171,7 +171,7 @@ def _build_base_query(
     """
 
 
-# Aggregation wrapper – groups 100 m cells into a coarser resolution.
+# Aggregation wrapper – groups 250 m cells into a coarser resolution.
 # Uses population-weighted averaging for scores; falls back to simple
 # AVG when all population in a group is zero.
 # The {base_sql} placeholder is replaced at call-time.
@@ -223,7 +223,7 @@ async def get_cells_geojson(
     mode: TransportMode | None = Query(None, description="Filter by transport mode"),
     purpose: str | None = Query(None, description="Filter by destination purpose (e.g. hospital, bachiller)"),
     metric: Metric = Query(Metric.score, description="Metric to return: score or travel_time"),
-    resolution: int = Query(100, description="Grid resolution in meters: 100, 500, or 1000"),
+    resolution: int = Query(250, description="Grid resolution in meters: 250, 500, or 1000"),
     departure_time: str = Query(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time of day (HH:MM, 30-min intervals)",
@@ -235,9 +235,9 @@ async def get_cells_geojson(
 
     *resolution* controls the grid cell size returned:
 
-    - **100** (default): base 100 m cells.
-    - **500**: 500 m cells (5x5 base cells, population-weighted scores).
-    - **1000**: 1 km cells (10x10 base cells, population-weighted scores).
+    - **250** (default): base 250 m cells.
+    - **500**: 500 m cells (2x2 base cells, population-weighted scores).
+    - **1000**: 1 km cells (4x4 base cells, population-weighted scores).
 
     departure_time selects which time-of-day slot to display (e.g. "08:00").
     metric=score (default): accessibility score (0-100).
@@ -253,7 +253,7 @@ async def get_cells_geojson(
     params: dict[str, object] = {"tid": tenant.tenant_id, "dep_time": dep_time}
     base_sql = _build_base_query(mode, purpose, metric, params)
 
-    if resolution == 100:
+    if resolution == 250:
         sql = f"""
             SELECT id, cell_code, population, score,
                    ST_AsGeoJSON(geom)::json AS geometry
@@ -273,7 +273,7 @@ async def get_cells_geojson(
             "population": row.population,
             "score": float(row.score) if row.score is not None else None,
         }
-        if resolution == 100:
+        if resolution == 250:
             props["id"] = row.id
         features.append({
             "type": "Feature",

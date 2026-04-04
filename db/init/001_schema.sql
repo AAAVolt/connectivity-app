@@ -70,7 +70,7 @@ CREATE TABLE municipalities (
 CREATE INDEX idx_municipalities_geom   ON municipalities USING GIST (geom);
 CREATE INDEX idx_municipalities_tenant ON municipalities (tenant_id);
 
--- 100 m grid cells
+-- 250 m grid cells
 CREATE TABLE grid_cells (
     id          BIGSERIAL PRIMARY KEY,
     tenant_id   UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,

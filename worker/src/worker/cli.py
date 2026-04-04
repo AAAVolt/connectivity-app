@@ -30,9 +30,9 @@ def hello(
 @app.command()
 def build_grid(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
-    cell_size: int = typer.Option(100, help="Grid cell size in metres"),
+    cell_size: int = typer.Option(250, help="Grid cell size in metres"),
 ) -> None:
-    """Generate a 100 m grid over the tenant's boundary."""
+    """Generate a 250 m grid over the tenant's boundary."""
     from worker.pipeline.grid import build_grid as _build_grid
 
     session = get_session()
@@ -142,7 +142,7 @@ def import_travel_times(
 @app.command()
 def seed_demo(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
-    cell_size: int = typer.Option(100, help="Grid cell size in metres"),
+    cell_size: int = typer.Option(250, help="Grid cell size in metres"),
 ) -> None:
     """Seed the database with synthetic data for local development.
 
@@ -190,7 +190,7 @@ def seed_demo(
 @app.command()
 def run_pipeline(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
-    cell_size: int = typer.Option(100, help="Grid cell size in metres"),
+    cell_size: int = typer.Option(250, help="Grid cell size in metres"),
     r5r_output: Path = typer.Option(
         "/data/output", help="Directory with R5R ttm_*.parquet files"
     ),
@@ -503,6 +503,109 @@ def import_gtfs_shapes(
         typer.echo("GTFS import results:")
         for operator, stats in results.items():
             typer.echo(f"  {operator}: {stats.get('routes', 0)} routes, {stats.get('stops', 0)} stops")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def import_demographics(
+    csv_path: Optional[Path] = typer.Option(
+        None, help="Path to EUSTAT demographics CSV (downloads if omitted)"
+    ),
+    year: int = typer.Option(2025, help="Reference year"),
+) -> None:
+    """Import age-group demographics per municipality from EUSTAT.
+
+    Downloads census-section-level data from EUSTAT and aggregates to
+    municipality level with age groups: 0-17, 18-25, 26-64, 65+.
+    """
+    from worker.pipeline.import_demographics import import_demographics_from_csv
+
+    session = get_session()
+    try:
+        stats = import_demographics_from_csv(session, csv_path, year=year)
+        typer.echo(f"Demographics imported: {stats['municipalities']} municipalities (year {stats['year']})")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def import_income(
+    csv_dir: Optional[Path] = typer.Option(
+        None, help="Directory with income CSVs (downloads if omitted)"
+    ),
+) -> None:
+    """Import income data per municipality from UDALMAP / Open Data Euskadi.
+
+    Downloads renta personal disponible (index), mean personal income,
+    and mean disposable income per municipality.
+    """
+    from worker.pipeline.import_income import import_income as _import
+
+    session = get_session()
+    try:
+        stats = _import(session, csv_dir)
+        typer.echo(f"Income imported: {stats['inserted']} records, "
+                   f"{stats['municipalities']} municipalities")
+        typer.echo(f"  Years: {stats.get('years', [])}")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def import_car_ownership(
+    csv_path: Optional[Path] = typer.Option(
+        None, help="Path to UDALMAP car ownership CSV (downloads if omitted)"
+    ),
+) -> None:
+    """Import car ownership (vehicles/inhabitant) per municipality from UDALMAP.
+
+    Downloads from Open Data Euskadi: indicator 102 (parque de vehículos).
+    """
+    from worker.pipeline.import_car_ownership import import_car_ownership as _import
+
+    session = get_session()
+    try:
+        stats = _import(session, csv_path)
+        typer.echo(f"Car ownership imported: {stats['inserted']} records, "
+                   f"{stats['municipalities']} municipalities")
+        typer.echo(f"  Years: {stats.get('years', [])}")
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        session.close()
+
+
+@app.command()
+def compute_frequency(
+    gtfs_dir: Path = typer.Option(
+        "/data/gtfs", help="Directory containing .gtfs.zip files"
+    ),
+) -> None:
+    """Compute transit frequency (departures/hour) per stop from GTFS data.
+
+    Reads stop_times, trips, and calendar from each GTFS feed, filters
+    to weekday service, and computes departures per hour in multiple
+    time windows (AM peak, midday, afternoon, evening, full day).
+    """
+    from worker.pipeline.compute_frequency import compute_transit_frequency
+
+    session = get_session()
+    try:
+        stats = compute_transit_frequency(session, gtfs_dir)
+        typer.echo(f"Transit frequency computed: {stats['total_records']} records")
+        for op, count in sorted(stats.get("operators", {}).items()):
+            typer.echo(f"  {op}: {count} stop×window records")
     except Exception as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc

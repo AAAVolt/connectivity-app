@@ -12,6 +12,7 @@ from backend.api.dashboard import router as dashboard_router
 from backend.api.destinations import router as destinations_router
 from backend.api.health import router as health_router
 from backend.api.stats import router as stats_router
+from backend.api.sociodemographic import router as sociodemographic_router
 from backend.api.transit import router as transit_router
 
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     application.include_router(cells_router)
     application.include_router(dashboard_router)
     application.include_router(destinations_router)
+    application.include_router(sociodemographic_router)
     application.include_router(stats_router)
     application.include_router(transit_router)
 
