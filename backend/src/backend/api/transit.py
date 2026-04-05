@@ -5,6 +5,7 @@ import json
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 
+from backend.api.schemas import parse_geometry
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
@@ -56,7 +57,7 @@ def get_transit_stops(
                 "stop_id": row.stop_id,
                 "stop_name": row.stop_name,
             },
-            "geometry": json.loads(row.geometry),
+            "geometry": parse_geometry(row.geometry),
         }
         for row in rows
     ]
@@ -103,7 +104,7 @@ def get_transit_routes(
                 "route_type": row.route_type,
                 "color": color,
             },
-            "geometry": json.loads(row.geometry),
+            "geometry": parse_geometry(row.geometry),
         })
 
     return Response(

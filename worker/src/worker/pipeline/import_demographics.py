@@ -135,6 +135,7 @@ def import_demographics_from_csv(
     serving = Path(serving_dir)
     log = logger.bind(year=year)
 
+    downloaded_tmp: Path | None = None
     if csv_path is None and download:
         log.info("demographics_downloading_csv")
         csv_path = Path("/tmp/eustat_demographics.csv")
@@ -142,119 +143,125 @@ def import_demographics_from_csv(
             resp = client.get(EUSTAT_CSV_URL)
             resp.raise_for_status()
             csv_path.write_bytes(resp.content)
+        downloaded_tmp = csv_path
 
     if csv_path is None or not csv_path.exists():
         raise FileNotFoundError(f"Demographics CSV not found: {csv_path}")
 
-    raw = csv_path.read_text(encoding="utf-8-sig")
-    lines = raw.splitlines()
+    try:
+        raw = csv_path.read_text(encoding="utf-8-sig")
+        lines = raw.splitlines()
 
-    # Parse -- semicolon-delimited, header on row 6 (0-indexed), data from row 7
-    # Columns: muni_code; muni_name; district; section; total; men; women;
-    #          sex_ratio; pct_0_19; pct_20_64; pct_65+; ...
-    muni_data: dict[str, dict[str, float]] = {}
-    current_muni: str | None = None
+        # Parse -- semicolon-delimited, header on row 6 (0-indexed), data from row 7
+        # Columns: muni_code; muni_name; district; section; total; men; women;
+        #          sex_ratio; pct_0_19; pct_20_64; pct_65+; ...
+        muni_data: dict[str, dict[str, float]] = {}
+        current_muni: str | None = None
 
-    for line in lines[6:]:
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(";")
-        if len(parts) < 11:
-            continue
+        for line in lines[6:]:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(";")
+            if len(parts) < 11:
+                continue
 
-        code = parts[0].strip('"').strip()
-        section = parts[3].strip('"').strip()
-        pop_str = parts[4].strip('"').replace(".", "").strip()
+            code = parts[0].strip('"').strip()
+            section = parts[3].strip('"').strip()
+            pop_str = parts[4].strip('"').replace(".", "").strip()
 
-        if code:
-            current_muni = code
+            if code:
+                current_muni = code
 
-        # Skip district/municipality totals (section "000" or empty)
-        if not section or section == "000" or current_muni is None:
-            continue
+            # Skip district/municipality totals (section "000" or empty)
+            if not section or section == "000" or current_muni is None:
+                continue
 
-        try:
-            pop = int(pop_str)
-        except ValueError:
-            continue
-
-        # Parse percentage columns -- use comma as decimal separator
-        def parse_pct(s: str) -> float:
-            s = s.strip('"').strip().replace(",", ".")
             try:
-                return float(s)
+                pop = int(pop_str)
             except ValueError:
-                return 0.0
+                continue
 
-        pct_0_19 = parse_pct(parts[8])
-        pct_20_64 = parse_pct(parts[9])
-        pct_65 = parse_pct(parts[10])
+            # Parse percentage columns -- use comma as decimal separator
+            def parse_pct(s: str) -> float:
+                s = s.strip('"').strip().replace(",", ".")
+                try:
+                    return float(s)
+                except ValueError:
+                    return 0.0
 
-        # Aggregate to municipality
-        if current_muni not in muni_data:
-            muni_data[current_muni] = {
-                "pop_total": 0,
-                "pop_0_19_weighted": 0,
-                "pop_20_64_weighted": 0,
-                "pop_65_weighted": 0,
-            }
+            pct_0_19 = parse_pct(parts[8])
+            pct_20_64 = parse_pct(parts[9])
+            pct_65 = parse_pct(parts[10])
 
-        m = muni_data[current_muni]
-        m["pop_total"] += pop
-        m["pop_0_19_weighted"] += pop * pct_0_19 / 100
-        m["pop_20_64_weighted"] += pop * pct_20_64 / 100
-        m["pop_65_weighted"] += pop * pct_65 / 100
+            # Aggregate to municipality
+            if current_muni not in muni_data:
+                muni_data[current_muni] = {
+                    "pop_total": 0,
+                    "pop_0_19_weighted": 0,
+                    "pop_20_64_weighted": 0,
+                    "pop_65_weighted": 0,
+                }
 
-    log.info("demographics_parsed", municipalities=len(muni_data))
+            m = muni_data[current_muni]
+            m["pop_total"] += pop
+            m["pop_0_19_weighted"] += pop * pct_0_19 / 100
+            m["pop_20_64_weighted"] += pop * pct_20_64 / 100
+            m["pop_65_weighted"] += pop * pct_65 / 100
 
-    # Build records
-    records: list[dict[str, object]] = []
+        log.info("demographics_parsed", municipalities=len(muni_data))
 
-    for muni_code, m in muni_data.items():
-        pop_total = int(m["pop_total"])
-        if pop_total == 0:
-            continue
+        # Build records
+        records: list[dict[str, object]] = []
 
-        # Approximate age groups from broad bands
-        pop_0_19 = m["pop_0_19_weighted"]
-        pop_20_64 = m["pop_20_64_weighted"]
-        pop_65 = m["pop_65_weighted"]
+        for muni_code, m in muni_data.items():
+            pop_total = int(m["pop_total"])
+            if pop_total == 0:
+                continue
 
-        # Split 0-19 into 0-17 and 18-19 (approx 90% / 10%)
-        pop_0_17 = int(pop_0_19 * 0.9)
-        pop_18_19 = pop_0_19 - pop_0_17
+            # Approximate age groups from broad bands
+            pop_0_19 = m["pop_0_19_weighted"]
+            pop_20_64 = m["pop_20_64_weighted"]
+            pop_65 = m["pop_65_weighted"]
 
-        # Split 20-64 to extract 20-25 (6 years out of 45)
-        pop_20_25 = int(pop_20_64 * 6 / 45)
-        pop_26_64 = int(pop_20_64 - pop_20_25)
+            # Split 0-19 into 0-17 and 18-19 (approx 90% / 10%)
+            pop_0_17 = int(pop_0_19 * 0.9)
+            pop_18_19 = pop_0_19 - pop_0_17
 
-        pop_18_25 = int(pop_18_19 + pop_20_25)
-        pop_65_plus = int(pop_65)
+            # Split 20-64 to extract 20-25 (6 years out of 45)
+            pop_20_25 = int(pop_20_64 * 6 / 45)
+            pop_26_64 = int(pop_20_64 - pop_20_25)
 
-        full_muni_code = f"{BIZKAIA_PREFIX}{muni_code}" if len(muni_code) == 3 else muni_code
+            pop_18_25 = int(pop_18_19 + pop_20_25)
+            pop_65_plus = int(pop_65)
 
-        records.append({
-            "muni_code": full_muni_code,
-            "year": year,
-            "pop_total": pop_total,
-            "pop_0_17": pop_0_17,
-            "pop_18_25": pop_18_25,
-            "pop_26_64": pop_26_64,
-            "pop_65_plus": pop_65_plus,
-            "pct_0_17": round(pop_0_17 / pop_total * 100, 2),
-            "pct_18_25": round(pop_18_25 / pop_total * 100, 2),
-            "pct_65_plus": round(pop_65_plus / pop_total * 100, 2),
-        })
+            full_muni_code = f"{BIZKAIA_PREFIX}{muni_code}" if len(muni_code) == 3 else muni_code
 
-    # Write Parquet
-    if records:
-        df = pd.DataFrame(records)
-        out_path = serving / "municipality_demographics.parquet"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(out_path, index=False)
+            records.append({
+                "muni_code": full_muni_code,
+                "year": year,
+                "pop_total": pop_total,
+                "pop_0_17": pop_0_17,
+                "pop_18_25": pop_18_25,
+                "pop_26_64": pop_26_64,
+                "pop_65_plus": pop_65_plus,
+                "pct_0_17": round(pop_0_17 / pop_total * 100, 2),
+                "pct_18_25": round(pop_18_25 / pop_total * 100, 2),
+                "pct_65_plus": round(pop_65_plus / pop_total * 100, 2),
+            })
 
-    inserted = len(records)
-    log.info("demographics_imported", inserted=inserted)
+        # Write Parquet
+        if records:
+            df = pd.DataFrame(records)
+            out_path = serving / "municipality_demographics.parquet"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(out_path, index=False)
 
-    return {"municipalities": inserted, "year": year, "source": "eustat_csv"}
+        inserted = len(records)
+        log.info("demographics_imported", inserted=inserted)
+
+        return {"municipalities": inserted, "year": year, "source": "eustat_csv"}
+    finally:
+        if downloaded_tmp and downloaded_tmp.exists():
+            downloaded_tmp.unlink()
+            log.info("demographics_temp_file_cleaned", path=str(downloaded_tmp))

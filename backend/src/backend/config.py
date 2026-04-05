@@ -2,7 +2,14 @@
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+_INSECURE_SECRETS = frozenset({
+    "dev-secret-change-me",
+    "CHANGE-ME-IN-PROD",
+    "",
+})
 
 
 class Settings(BaseSettings):
@@ -17,6 +24,15 @@ class Settings(BaseSettings):
     environment: str = "local"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
+
+    @model_validator(mode="after")
+    def _check_jwt_secret(self) -> "Settings":
+        if self.environment != "local" and self.jwt_secret in _INSECURE_SECRETS:
+            raise ValueError(
+                "JWT_SECRET must be set to a strong, unique value in "
+                f"non-local environments (current environment: {self.environment})"
+            )
+        return self
 
 
 @lru_cache

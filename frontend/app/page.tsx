@@ -1180,7 +1180,7 @@ function OverviewTab({
               <div className="flex gap-4 justify-center mt-2 text-[10px] text-muted-foreground">
                 <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" /> {t("dash.socio.lowIncomeLowConn")}</span>
                 <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-green-600 inline-block" /> {t("ctx.income.aboveAvg")}</span>
-                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-slate-400 inline-block" /> Mixed</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-slate-400 inline-block" /> {t("ctx.income.mixed")}</span>
               </div>
             </CardContent>
           </Card>

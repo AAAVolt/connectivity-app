@@ -44,17 +44,17 @@ const COVERAGE_COLORS = [
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function fmt(n: number | null | undefined, decimals = 1): string {
+export function fmt(n: number | null | undefined, decimals = 1, locale = "es"): string {
   if (n == null) return "\u2014";
-  return n.toLocaleString("en", {
+  return n.toLocaleString(locale, {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
 }
 
-export function fmtPop(n: number | null | undefined): string {
+export function fmtPop(n: number | null | undefined, locale = "es"): string {
   if (n == null) return "\u2014";
-  return Math.round(n).toLocaleString("en");
+  return Math.round(n).toLocaleString(locale);
 }
 
 // ---------------------------------------------------------------------------

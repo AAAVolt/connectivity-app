@@ -5,6 +5,7 @@ import json
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
+from backend.api.schemas import parse_geometry
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
@@ -54,7 +55,7 @@ def get_destinations_geojson(
                 "type_label": row.type_label,
                 "weight": row.weight,
             },
-            "geometry": json.loads(row.geojson),
+            "geometry": parse_geometry(row.geojson),
         }
         for row in rows
     ]

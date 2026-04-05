@@ -81,7 +81,10 @@ def compute_scores(
         ).fetchall()
         slots = [r[0] for r in rows]
         if not slots:
-            slots = ["08:00"]
+            raise ValueError(
+                f"No departure time slots found in travel_times for tenant {tenant_id}. "
+                "Ensure travel times have been imported before scoring."
+            )
 
     log.info("scoring_slots", count=len(slots), slots=slots)
 
@@ -207,6 +210,14 @@ def _compute_for_slot(
 
         # Map destination type -> purpose
         df["purpose"] = df["dest_type"].map(config.purpose_map)
+        unmapped_mask = df["purpose"].isna()
+        if unmapped_mask.any():
+            unmapped_types = df.loc[unmapped_mask, "dest_type"].unique().tolist()
+            log.warning(
+                "unmapped_destination_types",
+                types=unmapped_types,
+                rows_dropped=int(unmapped_mask.sum()),
+            )
         df = df.dropna(subset=["purpose"])
         if df.empty:
             continue
@@ -285,7 +296,7 @@ def _compute_for_slot(
         mn, mx = group["score"].min(), group["score"].max()
         out = group.copy()
         out["score_normalized"] = (
-            0.0 if mx == mn else (out["score"] - mn) / (mx - mn) * 100.0
+            50.0 if mx == mn else (out["score"] - mn) / (mx - mn) * 100.0
         )
         return out
 
@@ -311,11 +322,17 @@ def _compute_for_slot(
     else:
         min_tt_df = pd.DataFrame()
 
-    # Combined scores
+    # Combined scores — normalise weights so only purposes present in the
+    # data contribute and their effective weights sum to 1.0 per mode.
+    present_purposes = set(grouped[["mode", "purpose"]].itertuples(index=False, name=None))
     weights_rows = []
     for mode, purposes in config.combined_weights.items():
-        for purpose, w in purposes.items():
-            weights_rows.append({"mode": mode, "purpose": purpose, "w": w})
+        active = {p: w for p, w in purposes.items() if (mode, p) in present_purposes}
+        total = sum(active.values())
+        if total <= 0:
+            continue
+        for purpose, w in active.items():
+            weights_rows.append({"mode": mode, "purpose": purpose, "w": w / total})
     weights_df = pd.DataFrame(weights_rows)
 
     merged = grouped.merge(weights_df, on=["mode", "purpose"], how="inner")
@@ -326,7 +343,7 @@ def _compute_for_slot(
 
     c_min, c_max = combined["combined_score"].min(), combined["combined_score"].max()
     combined["combined_score_normalized"] = (
-        0.0 if c_max == c_min
+        50.0 if c_max == c_min
         else (combined["combined_score"] - c_min) / (c_max - c_min) * 100.0
     )
 

@@ -7,6 +7,9 @@ municipality/comarca rankings, and service coverage thresholds.
 
 from __future__ import annotations
 
+import logging
+
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -14,6 +17,8 @@ from backend.api.cells import DEFAULT_DEPARTURE_TIME, _validate_departure_time
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -134,7 +139,11 @@ def get_summary(
             if where:
                 q += f" WHERE {where}"
             return db.execute(q, {"tid": tenant.tenant_id}).one().c
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Table doesn't exist in this dataset — expected in minimal setups
+            return 0
         except Exception:
+            _logger.warning("_safe_count failed for table=%s", table, exc_info=True)
             return 0
 
     class _Counts:

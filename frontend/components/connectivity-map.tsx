@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, PanelLeftClose, PanelLeft } from "lucide-react";
 import type { Map as MaplibreMap } from "maplibre-gl";
 import { useTranslation } from "@/lib/i18n";
-import { buildHeightExpr } from "@/lib/map-3d";
+import { buildHeightExpr, getResolution as getGridResolution } from "@/lib/map-3d";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const DEMO_TENANT = "00000000-0000-0000-0000-000000000001";
@@ -101,12 +101,8 @@ const DEST_LAYERS = [
   { id: "dest-universidad", type: "universidad", color: "#22c55e", label: "Universidad" },
 ];
 
-// ── Zoom → grid resolution mapping ──
-function getResolution(zoom: number): number {
-  if (zoom < 9.5) return 1000;
-  if (zoom < 11) return 500;
-  return 250;
-}
+// ── Zoom → grid resolution mapping (delegates to map-3d.ts) ──
+const getResolution = getGridResolution;
 
 const RESOLUTION_LABELS: Record<number, string> = {
   250: "250 m",
@@ -418,6 +414,7 @@ export default function ConnectivityMap() {
       })
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
+        setError("Failed to load frequency data");
       });
 
     return () => controller.abort();
@@ -439,8 +436,10 @@ export default function ConnectivityMap() {
     // Load data if source doesn't exist yet
     const source = mlMap.getSource("social-munis");
     if (!source) {
+      const controller = new AbortController();
       fetch(`${API_BASE}/sociodemographic/municipalities/geojson`, {
         headers: { "X-Tenant-ID": DEMO_TENANT },
+        signal: controller.signal,
       })
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
@@ -456,7 +455,11 @@ export default function ConnectivityMap() {
           }, "cells-fill");
           applySocialPaint(mlMap, socialLayer);
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          setError("Failed to load sociodemographic layer");
+        });
+      return () => controller.abort();
     } else {
       if (map.getLayer("social-fill")) {
         map.setLayoutProperty("social-fill", "visibility", "visible");
@@ -540,7 +543,7 @@ export default function ConnectivityMap() {
           }
         }
       })
-      .catch(() => {});
+      .catch(() => { setError("Failed to load departure times"); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -575,15 +578,11 @@ export default function ConnectivityMap() {
       signal: controller.signal,
     })
       .then((res) => {
-        if (!res.ok) {
-          console.error(`[cells] ${res.status} ${res.statusText} – ${url}`);
-          return null;
-        }
+        if (!res.ok) return null;
         return res.json();
       })
       .then((data) => {
         if (!data) return;
-        console.info(`[cells] loaded ${data.features?.length ?? 0} features (${resolution} m)`);
         const source = mlMap.getSource("cells");
         if (source && "setData" in source) {
           (source as { setData: (d: unknown) => void }).setData(data);
@@ -592,7 +591,7 @@ export default function ConnectivityMap() {
       })
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        console.error("[cells] fetch failed:", err);
+        setError("Failed to load grid cells");
       });
 
     // Update the fill color expression to match the active metric
@@ -903,7 +902,7 @@ export default function ConnectivityMap() {
                   },
                 });
               }
-            } catch { /* optional */ }
+            } catch (e) { console.warn("[map] optional layer failed:", e); }
 
             // 6. Destinations
             setStatus("map.loadingDestinations");
@@ -925,7 +924,7 @@ export default function ConnectivityMap() {
                   });
                 }
               }
-            } catch { /* optional */ }
+            } catch (e) { console.warn("[map] optional layer failed:", e); }
 
             // 7. Transit routes (all operators, filtered client-side)
             setStatus("map.loadingTransit");
@@ -952,7 +951,7 @@ export default function ConnectivityMap() {
                   },
                 });
               }
-            } catch { /* optional */ }
+            } catch (e) { console.warn("[map] optional layer failed:", e); }
 
             // 8. Transit stops (all operators, filtered client-side)
             try {
@@ -977,7 +976,7 @@ export default function ConnectivityMap() {
                   },
                 });
               }
-            } catch { /* optional */ }
+            } catch (e) { console.warn("[map] optional layer failed:", e); }
 
             // 9. Frequency layer (starts empty, loaded on demand)
             map.addSource("frequency", {
@@ -1160,7 +1159,7 @@ export default function ConnectivityMap() {
           map.addSource(sourceId, { type: "geojson", data: await res.json() });
           map.addLayer({ id: layerId, type: layerType, source: sourceId, layout: { visibility }, paint } as Parameters<MaplibreMap["addLayer"]>[0]);
         }
-      } catch { /* optional */ }
+      } catch (e) { console.warn("[map] optional layer failed:", e); }
     }
 
     init();

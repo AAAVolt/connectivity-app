@@ -3,6 +3,12 @@
 # Usage: bash infra/deploy.sh
 set -euo pipefail
 
+if [ -z "${JWT_SECRET:-}" ] || [ "${JWT_SECRET}" = "CHANGE-ME-IN-PROD" ] || [ "${JWT_SECRET}" = "dev-secret-change-me" ]; then
+  echo "ERROR: JWT_SECRET must be set to a strong, unique value before deploying."
+  echo "       export JWT_SECRET=\$(openssl rand -base64 32)"
+  exit 1
+fi
+
 PROJECT_ID="bizkaia-492317"
 REGION="europe-southwest1"
 AR_REPO="bizkaia-images"
@@ -31,8 +37,8 @@ gcloud run deploy "${SERVICE}" \
   --min-instances=0 \
   --max-instances=5 \
   --timeout=120 \
-  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,JWT_SECRET=${JWT_SECRET:-CHANGE-ME-IN-PROD}" \
-  --allow-unauthenticated
+  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,JWT_SECRET=${JWT_SECRET}" \
+  --no-allow-unauthenticated
 
 URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --format="value(status.url)")
 echo ""

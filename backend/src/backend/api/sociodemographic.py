@@ -11,6 +11,8 @@ import json
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from backend.api.cells import DEFAULT_DEPARTURE_TIME, _validate_departure_time
+from backend.api.schemas import parse_geometry
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
@@ -213,10 +215,16 @@ def get_frequency_geojson(
 
 @router.get("/municipalities/geojson")
 def get_municipalities_socio_geojson(
+    departure_time: str = Query(
+        DEFAULT_DEPARTURE_TIME,
+        description="Departure time slot (HH:MM, 30-min intervals)",
+    ),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> dict:
     """Return municipalities as GeoJSON with sociodemographic properties for choropleth."""
+    dep_time = _validate_departure_time(departure_time)
+
     # DuckDB supports DISTINCT ON same as PostgreSQL.
     result = db.execute(
         """
@@ -242,7 +250,7 @@ def get_municipalities_socio_geojson(
             FROM municipalities m
             JOIN grid_cells g ON g.tenant_id = m.tenant_id AND ST_Intersects(g.centroid, m.geom)
             LEFT JOIN combined_scores cs ON cs.cell_id = g.id AND cs.tenant_id = g.tenant_id
-                AND cs.departure_time = '08:00'
+                AND cs.departure_time = $dep_time
             WHERE m.tenant_id = $tenant_id
             GROUP BY m.muni_code
         )
@@ -259,7 +267,7 @@ def get_municipalities_socio_geojson(
         LEFT JOIN latest_cars c ON c.muni_code = m.muni_code
         WHERE m.tenant_id = $tenant_id
         """,
-        {"tenant_id": tenant.tenant_id},
+        {"tenant_id": tenant.tenant_id, "dep_time": dep_time},
     )
 
     rows = [row._mapping for row in result.fetchall()]
@@ -303,7 +311,7 @@ def get_municipalities_socio_geojson(
 
         features.append({
             "type": "Feature",
-            "geometry": json.loads(r["geometry"]) if r["geometry"] else None,
+            "geometry": parse_geometry(r["geometry"]),
             "properties": {
                 "muni_code": r["muni_code"],
                 "name": r["name"],
@@ -323,10 +331,16 @@ def get_municipalities_socio_geojson(
 
 @router.get("/profiles", response_model=list[MunicipalitySocioProfile])
 def get_socio_profiles(
+    departure_time: str = Query(
+        DEFAULT_DEPARTURE_TIME,
+        description="Departure time slot (HH:MM, 30-min intervals)",
+    ),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalitySocioProfile]:
     """Return combined sociodemographic + connectivity profile per municipality."""
+    dep_time = _validate_departure_time(departure_time)
+
     result = db.execute(
         """
         WITH latest_demo AS (
@@ -360,7 +374,7 @@ def get_socio_profiles(
                 AND ST_Intersects(g.centroid, m.geom)
             LEFT JOIN combined_scores cs ON cs.cell_id = g.id
                 AND cs.tenant_id = g.tenant_id
-                AND cs.departure_time = '08:00'
+                AND cs.departure_time = $dep_time
             WHERE m.tenant_id = $tenant_id
             GROUP BY m.muni_code, m.name
         )
@@ -375,7 +389,7 @@ def get_socio_profiles(
         LEFT JOIN latest_cars c ON c.muni_code = ms.muni_code
         ORDER BY ms.population DESC NULLS LAST
         """,
-        {"tenant_id": tenant.tenant_id},
+        {"tenant_id": tenant.tenant_id, "dep_time": dep_time},
     )
 
     return [MunicipalitySocioProfile(**row._mapping) for row in result.fetchall()]

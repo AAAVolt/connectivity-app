@@ -571,6 +571,7 @@ export const eu: Locale = {
   "ctx.income.disposable": "Batez besteko Errenta Erabilgarria",
   "ctx.income.belowAvg": "Bizkaiako batez bestekoaren azpitik",
   "ctx.income.aboveAvg": "Bizkaiako batez bestekoaren gainetik",
+  "ctx.income.mixed": "Mistoa",
   "ctx.income.vs": "vs konektibitate puntuazioa",
   "ctx.income.scatterTitle": "Errenta vs Konektibitatea",
   "ctx.income.scatterSubtitle": "Beheko ezkerreko izkinako udalerriak (errenta baxua + konektibitate baxua) desabantailatuenak dira.",

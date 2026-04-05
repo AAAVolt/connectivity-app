@@ -46,9 +46,11 @@ diminishing:
 
 max_travel_time: 120
 
-# Equal weights across all POI types (TRANSIT only)
-# Real data: 10 types x 0.10 = 1.0
-# Demo data: 4 types x 0.25 = 1.0
+# Equal weights across all POI types (TRANSIT only).
+# Real data uses 10 types; demo data uses 4 types.
+# Both sets are listed here — the scoring engine dynamically normalises
+# weights so that only types present in the data contribute and their
+# effective weights sum to 1.0.
 combined_weights:
   TRANSIT:
     aeropuerto: 0.10

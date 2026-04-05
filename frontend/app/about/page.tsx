@@ -1,6 +1,22 @@
 "use client";
 
+import DOMPurify from "dompurify";
 import { useTranslation } from "@/lib/i18n";
+
+/**
+ * Render a translation string that may contain a limited set of inline
+ * HTML tags (`<strong>`, `<em>`, `<sub>`, `<sup>`, `<br>`).
+ *
+ * Input is sanitised with DOMPurify so no script injection is possible
+ * even if a locale file were compromised.
+ */
+function RichText({ html, className }: { html: string; className?: string }) {
+  const clean = DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ["strong", "em", "sub", "sup", "br", "b", "i"],
+    ALLOWED_ATTR: [],
+  });
+  return <span className={className} dangerouslySetInnerHTML={{ __html: clean }} />;
+}
 
 /* ── Score color ramp (kept in sync with connectivity-map.tsx) ── */
 const SCORE_STOPS = [
@@ -78,7 +94,7 @@ export default function MethodologyPage() {
             {t("method.whatIsThisP1")}{" "}
             <em>&ldquo;{t("method.whatIsThisQuestion")}&rdquo;</em>
           </p>
-          <p className="mt-3" dangerouslySetInnerHTML={{ __html: t("method.whatIsThisP2") }} />
+          <p className="mt-3"><RichText html={t("method.whatIsThisP2")} /></p>
           <ul className="mt-2 ml-4 list-disc space-y-1">
             <li><strong className="text-foreground">{t("method.zoom1km").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom1km").split(" \u2014 ")[1]}</li>
             <li><strong className="text-foreground">{t("method.zoom500m").split(" \u2014 ")[0]}</strong> &mdash; {t("method.zoom500m").split(" \u2014 ")[1]}</li>
@@ -95,7 +111,7 @@ export default function MethodologyPage() {
           <p>{t("method.step1Text")}</p>
 
           <Step n={2} title={t("method.step2Title")} />
-          <p dangerouslySetInnerHTML={{ __html: t("method.step2Text") }} />
+          <p><RichText html={t("method.step2Text")} /></p>
 
           <Step n={3} title={t("method.step3Title")} />
           <p>{t("method.step3Text")}</p>
@@ -146,7 +162,7 @@ export default function MethodologyPage() {
           <p className="mt-3">{t("method.step4Foot")}</p>
 
           <Step n={5} title={t("method.step5Title")} />
-          <p dangerouslySetInnerHTML={{ __html: t("method.step5Text") }} />
+          <p><RichText html={t("method.step5Text")} /></p>
           <ul className="mt-2 ml-4 list-disc space-y-1">
             <li>
               <strong className="text-foreground">{t("method.step5Mode")}</strong> {t("method.step5ModeVal")}
@@ -172,8 +188,8 @@ export default function MethodologyPage() {
           <div className="my-3 rounded-md border bg-muted/30 px-4 py-2.5 text-center font-mono text-xs">
             impedance = e<sup>&minus;&alpha; &times; t</sup>
           </div>
-          <p dangerouslySetInnerHTML={{ __html: t("method.decayP2") }} />
-          <p className="mt-2" dangerouslySetInnerHTML={{ __html: t("method.decayP3") }} />
+          <p><RichText html={t("method.decayP2")} /></p>
+          <p className="mt-2"><RichText html={t("method.decayP3")} /></p>
 
           <Step n={2} title={t("method.diminishing")} />
           <p>{t("method.diminishingP1")}</p>
@@ -311,7 +327,7 @@ export default function MethodologyPage() {
         {/* ─── 6. Sociodemographic layer ─── */}
         <section>
           <SectionHeading>{t("method.socioTitle")}</SectionHeading>
-          <p dangerouslySetInnerHTML={{ __html: t("method.socioIntro") }} />
+          <p><RichText html={t("method.socioIntro")} /></p>
 
           <p className="mt-4 mb-2 font-medium text-foreground">{t("method.socioIndicators")}</p>
           <div className="overflow-x-auto rounded-md border">
@@ -327,28 +343,28 @@ export default function MethodologyPage() {
                 <tr>
                   <td className="px-3 py-2 font-medium text-foreground">{t("method.socioElderly")}</td>
                   <td className="px-3 py-2">{t("method.socioElderlySource")}</td>
-                  <td className="px-3 py-2" dangerouslySetInnerHTML={{ __html: t("method.socioElderlyInterp") }} />
+                  <td className="px-3 py-2"><RichText html={t("method.socioElderlyInterp")} /></td>
                 </tr>
                 <tr>
                   <td className="px-3 py-2 font-medium text-foreground">{t("method.socioIncome")}</td>
                   <td className="px-3 py-2">{t("method.socioIncomeSource")}</td>
-                  <td className="px-3 py-2" dangerouslySetInnerHTML={{ __html: t("method.socioIncomeInterp") }} />
+                  <td className="px-3 py-2"><RichText html={t("method.socioIncomeInterp")} /></td>
                 </tr>
                 <tr>
                   <td className="px-3 py-2 font-medium text-foreground">{t("method.socioCars")}</td>
                   <td className="px-3 py-2">{t("method.socioCarsSource")}</td>
-                  <td className="px-3 py-2" dangerouslySetInnerHTML={{ __html: t("method.socioCarsInterp") }} />
+                  <td className="px-3 py-2"><RichText html={t("method.socioCarsInterp")} /></td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p className="mt-5 mb-2 font-medium text-foreground">{t("method.socioVulnTitle")}</p>
-          <p dangerouslySetInnerHTML={{ __html: t("method.socioVulnP1") }} />
+          <p><RichText html={t("method.socioVulnP1")} /></p>
           <div className="my-3 rounded-md border bg-muted/30 px-4 py-2.5 text-center font-mono text-xs">
             V = 0.4 &times; (1 &minus; connectivity<sub>norm</sub>) + 0.2 &times; elderly<sub>norm</sub> + 0.2 &times; (1 &minus; income<sub>norm</sub>) + 0.2 &times; (1 &minus; cars<sub>norm</sub>)
           </div>
-          <p dangerouslySetInnerHTML={{ __html: t("method.socioVulnP2") }} />
+          <p><RichText html={t("method.socioVulnP2")} /></p>
 
           <div className="mt-3 overflow-x-auto rounded-md border">
             <table className="w-full text-sm">
@@ -387,10 +403,10 @@ export default function MethodologyPage() {
           <p className="mt-4 mb-2 font-medium text-foreground">{t("method.socioColors")}</p>
           <p>{t("method.socioColorsP1")}</p>
           <ul className="mt-2 ml-4 list-disc space-y-1">
-            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsElderly") }} />
-            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsIncome") }} />
-            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsCars") }} />
-            <li dangerouslySetInnerHTML={{ __html: t("method.socioColorsVuln") }} />
+            <li><RichText html={t("method.socioColorsElderly")} /></li>
+            <li><RichText html={t("method.socioColorsIncome")} /></li>
+            <li><RichText html={t("method.socioColorsCars")} /></li>
+            <li><RichText html={t("method.socioColorsVuln")} /></li>
           </ul>
 
           <p className="mt-4 mb-2 font-medium text-foreground">{t("method.socioLimTitle")}</p>

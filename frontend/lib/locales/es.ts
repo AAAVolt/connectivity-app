@@ -571,6 +571,7 @@ export const es: Locale = {
   "ctx.income.disposable": "Renta Disponible Media",
   "ctx.income.belowAvg": "por debajo de la media de Bizkaia",
   "ctx.income.aboveAvg": "por encima de la media de Bizkaia",
+  "ctx.income.mixed": "Mixto",
   "ctx.income.vs": "vs puntuación de conectividad",
   "ctx.income.scatterTitle": "Renta vs Conectividad",
   "ctx.income.scatterSubtitle": "Los municipios en la esquina inferior izquierda (baja renta + baja conectividad) son los más desfavorecidos.",

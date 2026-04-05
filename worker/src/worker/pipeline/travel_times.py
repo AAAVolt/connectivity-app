@@ -152,15 +152,34 @@ def import_travel_times(
             total_skipped += 1
             continue
 
-        # Coerce types
-        df["origin_cell_id"] = pd.to_numeric(df["origin_cell_id"], errors="coerce")
-        df["destination_id"] = pd.to_numeric(df["destination_id"], errors="coerce")
-        df["travel_time_minutes"] = pd.to_numeric(
-            df["travel_time_minutes"], errors="coerce"
-        )
-
+        # Coerce types — track rows that fail numeric conversion
         before = len(df)
+
+        for col in ("origin_cell_id", "destination_id", "travel_time_minutes"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        coerce_na = df[["origin_cell_id", "destination_id", "travel_time_minutes"]].isna().sum()
+        coerce_dropped = int(coerce_na.sum())
+        if coerce_dropped:
+            log.warning(
+                "rows_failed_numeric_coercion",
+                file=pq_file.name,
+                origin_cell_id_na=int(coerce_na["origin_cell_id"]),
+                destination_id_na=int(coerce_na["destination_id"]),
+                travel_time_minutes_na=int(coerce_na["travel_time_minutes"]),
+            )
+
         df = df.dropna(subset=["origin_cell_id", "destination_id", "travel_time_minutes"])
+
+        out_of_range = int(((df["travel_time_minutes"] < 0) | (df["travel_time_minutes"] > MAX_TRAVEL_TIME)).sum())
+        if out_of_range:
+            log.warning(
+                "rows_out_of_range",
+                file=pq_file.name,
+                count=out_of_range,
+                max_travel_time=MAX_TRAVEL_TIME,
+            )
+
         df = df[
             (df["travel_time_minutes"] >= 0)
             & (df["travel_time_minutes"] <= MAX_TRAVEL_TIME)

@@ -2,7 +2,7 @@
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.api.schemas import AreaStatsRequest, AreaStatsResponse
 from backend.auth.deps import get_tenant
@@ -52,7 +52,9 @@ def get_area_stats(
         """,
         {"geojson": geojson_str, "tid": tenant.tenant_id},
     )
-    row = result.one()
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No cells found in the given area")
 
     return AreaStatsResponse(
         cell_count=row.cell_count,

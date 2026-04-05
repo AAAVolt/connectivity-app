@@ -5,6 +5,7 @@ import json
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 
+from backend.api.schemas import parse_geometry
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
@@ -32,7 +33,7 @@ def get_region_boundary(
         {
             "type": "Feature",
             "properties": {"id": row.id, "name": row.name, "type": row.boundary_type},
-            "geometry": json.loads(row.geometry),
+            "geometry": parse_geometry(row.geometry),
         }
         for row in result.fetchall()
     ]
@@ -64,7 +65,7 @@ def get_municipalities(
         {
             "type": "Feature",
             "properties": {"id": row.id, "muni_code": row.muni_code, "name": row.name},
-            "geometry": json.loads(row.geometry),
+            "geometry": parse_geometry(row.geometry),
         }
         for row in result.fetchall()
     ]
@@ -96,7 +97,7 @@ def get_comarcas(
         {
             "type": "Feature",
             "properties": {"id": row.id, "comarca_code": row.comarca_code, "name": row.name},
-            "geometry": json.loads(row.geometry),
+            "geometry": parse_geometry(row.geometry),
         }
         for row in result.fetchall()
     ]
@@ -144,7 +145,7 @@ def get_nucleos(
                 "muni_code": row.muni_code,
                 "muni_name": row.muni_name,
             },
-            "geometry": json.loads(row.geometry),
+            "geometry": parse_geometry(row.geometry),
         }
         for row in result.fetchall()
     ]

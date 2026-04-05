@@ -6,12 +6,17 @@ All feeds are public, updated daily, standard GTFS format.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import httpx
 import structlog
 
 logger = structlog.get_logger()
+
+# Allow disabling SSL verification only when explicitly opted in (e.g. dev with
+# corporate proxy). Default is to verify certificates.
+_VERIFY_SSL = os.environ.get("GTFS_VERIFY_SSL", "1").lower() not in ("0", "false", "no")
 
 MOVEUSKADI_BASE = "https://www.geo.euskadi.eus/cartografia/DatosDescarga/Transporte/Moveuskadi"
 
@@ -53,7 +58,7 @@ def download_gtfs_feeds(
 
     results: dict[str, str] = {}
 
-    with httpx.Client(timeout=TIMEOUT_S, follow_redirects=True, verify=False) as client:
+    with httpx.Client(timeout=TIMEOUT_S, follow_redirects=True, verify=_VERIFY_SSL) as client:
         for operator, description in targets:
             url = f"{MOVEUSKADI_BASE}/{operator}/google_transit.zip"
             dest = output_dir / f"{operator}.gtfs.zip"

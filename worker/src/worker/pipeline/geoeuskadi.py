@@ -12,11 +12,18 @@ import json
 from pathlib import Path
 from typing import Any
 
+import os
+import time
+
 import geopandas as gpd
 import httpx
 import pandas as pd
 import structlog
 from shapely.geometry import MultiLineString, MultiPolygon, Point, Polygon, shape
+
+# Allow disabling SSL verification only when explicitly opted in (e.g. dev with
+# corporate proxy). Default is to verify certificates.
+_VERIFY_SSL = os.environ.get("GEOEUSKADI_VERIFY_SSL", "1").lower() not in ("0", "false", "no")
 
 logger = structlog.get_logger()
 
@@ -49,6 +56,8 @@ COMARCAS_URL = f"{GEOEUSKADI_BASE}/U11/LIMITES_CAS/MapServer/9/query"
 # Default request timeout
 TIMEOUT_S = 60
 MAX_RECORD_COUNT = 2000
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_S = 2.0
 
 # Destination type definitions (from 002_seed_demo.sql)
 DESTINATION_TYPES = [
@@ -79,7 +88,11 @@ def _query_arcgis(
     result_offset: int = 0,
     max_records: int = MAX_RECORD_COUNT,
 ) -> dict[str, Any]:
-    """Execute an ArcGIS REST query and return the JSON response."""
+    """Execute an ArcGIS REST query and return the JSON response.
+
+    Retries up to ``_MAX_RETRIES`` times with exponential back-off on
+    transient network / server errors.
+    """
     params = {
         "where": where,
         "outFields": out_fields,
@@ -88,10 +101,28 @@ def _query_arcgis(
         "resultOffset": result_offset,
         "resultRecordCount": max_records,
     }
-    with httpx.Client(timeout=TIMEOUT_S, verify=False) as client:
-        resp = client.get(url, params=params)
-        resp.raise_for_status()
-        return resp.json()
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            with httpx.Client(timeout=TIMEOUT_S, verify=_VERIFY_SSL) as client:
+                resp = client.get(url, params=params)
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+            last_exc = exc
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                raise  # Client errors (4xx) are not retryable
+            delay = _RETRY_BACKOFF_S * (2 ** (attempt - 1))
+            logger.warning(
+                "arcgis_query_retry",
+                url=url,
+                attempt=attempt,
+                max_retries=_MAX_RETRIES,
+                delay_s=delay,
+                error=str(exc),
+            )
+            time.sleep(delay)
+    raise last_exc  # type: ignore[misc]
 
 
 def _query_all_features(

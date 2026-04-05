@@ -7,7 +7,7 @@ from enum import Enum
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
-from backend.api.schemas import CellResponse, CellScoreDetail
+from backend.api.schemas import CellResponse, CellScoreDetail, parse_geometry
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
@@ -268,7 +268,7 @@ def get_cells_geojson(
         features.append({
             "type": "Feature",
             "properties": props,
-            "geometry": json.loads(row.geometry) if row.geometry else None,
+            "geometry": parse_geometry(row.geometry),
         })
 
     geojson = {"type": "FeatureCollection", "features": features}

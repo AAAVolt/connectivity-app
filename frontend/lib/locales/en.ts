@@ -579,6 +579,7 @@ const _en = {
   "ctx.income.disposable": "Mean Disposable Income",
   "ctx.income.belowAvg": "below Bizkaia average",
   "ctx.income.aboveAvg": "above Bizkaia average",
+  "ctx.income.mixed": "Mixed",
   "ctx.income.vs": "vs connectivity score",
   "ctx.income.scatterTitle": "Income vs Connectivity",
   "ctx.income.scatterSubtitle": "Municipalities in the bottom-left (low income + low connectivity) are the most disadvantaged.",

@@ -45,17 +45,25 @@ const I18nContext = createContext<I18nContextValue>({
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Lang>("es");
 
-  // Hydrate from localStorage
+  // Hydrate from localStorage (may be unavailable in private browsing)
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "es" || stored === "eu") {
-      setLangState(stored);
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === "en" || stored === "es" || stored === "eu") {
+        setLangState(stored);
+      }
+    } catch {
+      // localStorage unavailable — keep default
     }
   }, []);
 
   const setLang = useCallback((l: Lang) => {
     setLangState(l);
-    localStorage.setItem(STORAGE_KEY, l);
+    try {
+      localStorage.setItem(STORAGE_KEY, l);
+    } catch {
+      // localStorage unavailable — preference won't persist
+    }
   }, []);
 
   const t = useCallback(

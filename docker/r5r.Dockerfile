@@ -21,13 +21,24 @@ RUN wget -qO- https://packages.adoptium.net/artifactory/api/gpg/key/public | tee
     && apt-get update && apt-get install -y --no-install-recommends temurin-21-jdk \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-arm64
+# Symlink to a canonical path so JAVA_HOME is architecture-independent
+RUN ln -sf /usr/lib/jvm/temurin-21-jdk-* /usr/lib/jvm/temurin-21-jdk
+ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Configure Java for R (required by rJava / r5r)
 RUN R CMD javareconf
 
-RUN R -e "install.packages(c('rJava', 'sf', 'data.table', 'yaml', 'arrow', 'r5r'), repos='https://cloud.r-project.org/')"
+# Pin R package versions for reproducible builds (update manually when needed)
+RUN R -e " \
+  install.packages('remotes', repos='https://cloud.r-project.org/'); \
+  remotes::install_version('rJava',     version='1.0-11',  repos='https://cloud.r-project.org/'); \
+  remotes::install_version('sf',        version='1.0-19',  repos='https://cloud.r-project.org/'); \
+  remotes::install_version('data.table',version='1.16.4',  repos='https://cloud.r-project.org/'); \
+  remotes::install_version('yaml',      version='2.3.10',  repos='https://cloud.r-project.org/'); \
+  remotes::install_version('arrow',     version='18.1.0',  repos='https://cloud.r-project.org/'); \
+  remotes::install_version('r5r',       version='2.3',     repos='https://cloud.r-project.org/'); \
+"
 
 WORKDIR /r5r
 COPY r5r/scripts/ /r5r/scripts/

@@ -27,18 +27,18 @@ export function buildHeightExpr(
     : scoreHeightExpr(maxHeight);
 }
 
-/** Zoom → grid resolution mapping. */
+/** Zoom → grid resolution mapping.
+ *  Must stay in sync with backend ALLOWED_RESOLUTIONS (250, 500, 1000). */
 export function getResolution(zoom: number): number {
   if (zoom < 9.5) return 1000;
   if (zoom < 11) return 500;
-  if (zoom < 12.5) return 200;
-  return 100;
+  return 250;
 }
 
 /** Whether 3D extrusion is visible at a given resolution (perf guard). */
 export function is3DVisibleAtResolution(resolution: number): boolean {
-  // cells-3d has maxzoom:13 which corresponds to resolution >= 200
-  return resolution >= 200;
+  // 3D extrusion is shown at 250m and coarser to avoid performance issues.
+  return resolution >= 250;
 }
 
 /** Validate landmark feature structure. */
