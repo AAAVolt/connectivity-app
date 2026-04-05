@@ -2,7 +2,7 @@
 
 Reads the EUSTAT secciones censales shapefile and the population CSV,
 joins them by section code (province + municipality + district + section),
-and inserts matched records as population_sources.
+and writes matched records as population_sources.parquet (GeoParquet).
 
 Data sources:
   - Shapefile: SECCIONES_EUSTAT_5000_ETRS89.shp (from geo.euskadi.eus)
@@ -15,9 +15,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import structlog
-from shapely.geometry import MultiPolygon
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from shapely.geometry import MultiPolygon, Polygon
 
 logger = structlog.get_logger()
 
@@ -113,8 +111,6 @@ def _ensure_multi(geom: object) -> MultiPolygon:
     if geom.geom_type == "MultiPolygon":
         return geom
     # GeometryCollection or other — extract all polygon parts
-    from shapely.geometry import Polygon
-
     polys: list[Polygon] = []
     for g in (geom.geoms if hasattr(geom, "geoms") else []):
         if isinstance(g, Polygon):
@@ -125,18 +121,17 @@ def _ensure_multi(geom: object) -> MultiPolygon:
 
 
 def import_secciones(
-    session: Session,
     tenant_id: str,
+    serving_dir: str | Path,
     shp_path: Path,
     csv_path: Path,
-    *,
-    clear_existing: bool = True,
 ) -> dict[str, object]:
-    """Import EUSTAT census sections as population_sources.
+    """Import EUSTAT census sections as population_sources.parquet.
 
     Returns statistics including match counts, total population, and
     validation results.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id)
     log.info("import_secciones_start", shp=str(shp_path), csv=str(csv_path))
 
@@ -151,8 +146,9 @@ def import_secciones(
     )
 
     # Match
-    matched = []
-    unmatched_csv = []
+    matched_records: list[dict[str, object]] = []
+    matched_geoms: list[MultiPolygon] = []
+    unmatched_csv: list[str] = []
     csv_total_pop = 0
 
     for code, population in pop_data.items():
@@ -162,79 +158,38 @@ def import_secciones(
             unmatched_csv.append(code)
             continue
         row = rows.iloc[0]
-        matched.append({
-            "code": code,
+        matched_records.append({
+            "tenant_id": tenant_id,
             "name": row.get("SEC_MUNI_D", ""),
             "population": population,
-            "geom_wkt": row.geometry.wkt,
+            "source_code": code,
         })
+        matched_geoms.append(row.geometry)
 
     if unmatched_csv:
         log.warning("import_secciones_unmatched_csv", codes=unmatched_csv)
 
-    # Clear existing population sources if requested
-    if clear_existing:
-        deleted = session.execute(
-            text("DELETE FROM population_sources WHERE tenant_id = :tid"),
-            {"tid": tenant_id},
-        ).rowcount
-        if deleted:
-            log.info("import_secciones_cleared", deleted=deleted)
+    # Write GeoParquet
+    if matched_records:
+        out_gdf = gpd.GeoDataFrame(
+            matched_records, geometry=matched_geoms, crs="EPSG:4326"
+        )
+        out_path = serving / "population_sources.parquet"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_gdf.to_parquet(out_path)
 
-    # Batch insert
-    if matched:
-        insert_sql = text("""
-            INSERT INTO population_sources (tenant_id, name, population, source_code, geom)
-            VALUES (
-                :tid,
-                :name,
-                :pop,
-                :code,
-                ST_Multi(ST_MakeValid(ST_SetSRID(ST_GeomFromText(:wkt), :srid)))
-            )
-        """)
-        for rec in matched:
-            session.execute(insert_sql, {
-                "tid": tenant_id,
-                "name": rec["name"],
-                "pop": rec["population"],
-                "code": rec["code"],
-                "wkt": rec["geom_wkt"],
-                "srid": STORAGE_SRID,
-            })
+    matched_pop = sum(int(r["population"]) for r in matched_records)
+    written_count = len(matched_records)
+    loss_pct = abs(csv_total_pop - matched_pop) / csv_total_pop * 100 if csv_total_pop > 0 else 0
 
-    session.flush()
-
-    # Validate: totals in DB match CSV
-    db_total = session.execute(
-        text(
-            "SELECT COALESCE(SUM(population), 0) "
-            "FROM population_sources WHERE tenant_id = :tid"
-        ),
-        {"tid": tenant_id},
-    ).scalar()
-
-    db_count = session.execute(
-        text(
-            "SELECT COUNT(*) FROM population_sources WHERE tenant_id = :tid"
-        ),
-        {"tid": tenant_id},
-    ).scalar()
-
-    session.commit()
-
-    matched_pop = sum(r["population"] for r in matched)
-    loss_pct = abs(csv_total_pop - db_total) / csv_total_pop * 100 if csv_total_pop > 0 else 0
-
-    stats = {
+    stats: dict[str, object] = {
         "csv_sections": len(pop_data),
         "shp_sections": len(gdf),
-        "matched": len(matched),
+        "matched": len(matched_records),
         "unmatched_csv": len(unmatched_csv),
         "csv_total_population": csv_total_pop,
         "matched_population": matched_pop,
-        "db_total_population": float(db_total),
-        "db_source_count": db_count,
+        "written_count": written_count,
         "loss_pct": round(loss_pct, 4),
     }
 

@@ -77,11 +77,8 @@ cat(sprintf("Departure slots: %d (from %s to %s every %d min)\n",
 
 # ── Compute travel time matrices per (mode, slot) ──
 for (mode in config$modes) {
-  if (mode == "WALK") {
-    mode_vec <- "WALK"
-  } else {
-    mode_vec <- c("WALK", "TRANSIT")
-  }
+  # R5R needs WALK as access mode + TRANSIT as main mode
+  mode_vec <- c("WALK", "TRANSIT")
 
   for (slot_m in slot_minutes) {
     hh <- slot_m %/% 60

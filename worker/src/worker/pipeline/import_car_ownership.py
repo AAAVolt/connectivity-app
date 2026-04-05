@@ -1,9 +1,11 @@
 """Import car ownership data per municipality from UDALMAP / Open Data Euskadi.
 
-Source: UDALMAP indicator 102 — vehicles per inhabitant per municipality.
+Source: UDALMAP indicator 102 -- vehicles per inhabitant per municipality.
 Clean CSV: semicolon-delimited, decimal comma, 2003-2023.
 
 URL: https://opendata.euskadi.eus/contenidos/estadistica/udalmap_indicador_102/es_def/adjuntos/indicator.csv
+
+Output: municipality_car_ownership.parquet in the serving directory.
 """
 
 from __future__ import annotations
@@ -11,9 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import pandas as pd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 logger = structlog.get_logger()
 
@@ -34,7 +35,7 @@ def _parse_car_csv(content: str) -> dict[str, dict[int, float]]:
     if not lines:
         return {}
 
-    # Find header row — must contain both a label AND year columns (4-digit numbers)
+    # Find header row -- must contain both a label AND year columns (4-digit numbers)
     header_idx = 0
     for i, line in enumerate(lines):
         parts = line.split(";")
@@ -42,7 +43,7 @@ def _parse_car_csv(content: str) -> dict[str, dict[int, float]]:
             p.strip().strip('"').isdigit() and len(p.strip().strip('"')) == 4
             for p in parts
         )
-        has_label = "Municipio" in line or "municipio" in line or "Código" in line
+        has_label = "Municipio" in line or "municipio" in line or "Codigo" in line
         if has_label and has_years:
             header_idx = i
             break
@@ -82,7 +83,7 @@ def _parse_car_csv(content: str) -> dict[str, dict[int, float]]:
 
 
 def import_car_ownership(
-    session: Session,
+    serving_dir: str | Path,
     csv_path: Path | None = None,
     *,
     download: bool = True,
@@ -90,10 +91,13 @@ def import_car_ownership(
     """Download and import UDALMAP car ownership data for Bizkaia.
 
     Args:
-        session: Database session.
+        serving_dir: Output directory for Parquet files.
         csv_path: Path to local CSV. If None and download=True, fetches from web.
         download: Whether to download if csv_path is None.
+
+    Writes municipality_car_ownership.parquet.
     """
+    serving = Path(serving_dir)
     log = logger.bind(source="udalmap_cars")
 
     if csv_path and csv_path.exists():
@@ -111,32 +115,29 @@ def import_car_ownership(
     log.info("car_ownership_parsed", municipalities=len(parsed))
 
     if not parsed:
-        return {"inserted": 0}
+        return {"inserted": 0, "municipalities": 0, "years": []}
 
-    # Clear existing and insert
+    # Build records
     all_years: set[int] = set()
-    inserted = 0
+    records: list[dict[str, object]] = []
 
     for muni_code, yr_vals in sorted(parsed.items()):
         for year, veh_per_inhab in sorted(yr_vals.items()):
             all_years.add(year)
-            session.execute(
-                text("""
-                    INSERT INTO municipality_car_ownership
-                        (muni_code, year, vehicles_per_inhab)
-                    VALUES (:muni_code, :year, :vehicles_per_inhab)
-                    ON CONFLICT (muni_code, year) DO UPDATE SET
-                        vehicles_per_inhab = EXCLUDED.vehicles_per_inhab
-                """),
-                {
-                    "muni_code": muni_code,
-                    "year": year,
-                    "vehicles_per_inhab": veh_per_inhab,
-                },
-            )
-            inserted += 1
+            records.append({
+                "muni_code": muni_code,
+                "year": year,
+                "vehicles_per_inhab": veh_per_inhab,
+            })
 
-    session.commit()
+    # Write Parquet
+    inserted = len(records)
+    if records:
+        df = pd.DataFrame(records)
+        out_path = serving / "municipality_car_ownership.parquet"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(out_path, index=False)
+
     log.info("car_ownership_imported", inserted=inserted)
 
     return {

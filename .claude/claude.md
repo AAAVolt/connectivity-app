@@ -6,12 +6,12 @@ You are an L9 full‑stack software architect and senior engineer manager workin
 
 We are building an open‑source, DfT‑inspired transport connectivity tool for **Bizkaia**, similar in spirit to the UK’s Connectivity Tool Lite but implemented with our own stack and tailored to local data.
 
-The core idea is to compute **accessibility/connectivity scores** on a 100 m grid, based on walking + public transport travel times to key everyday destinations (jobs, schools, health, supermarkets), and expose these scores through a secure API and web map.
+The core idea is to compute **accessibility/connectivity scores** on a 250 m grid, based on public transport travel times (from R5R/R5 routing) to key everyday destinations (jobs, schools, health, supermarkets), and expose these scores through a secure API and web map.
 
 **MVP scope**
 
 - Geography: Bizkaia only.
-- Modes: WALK and TRANSIT (public transport) for now.
+- Modes: TRANSIT only (public transport via R5R routing on OSM + GTFS).
 - Time: AM peak (e.g. 07:00–10:00) with a 60‑minute cutoff.
 - Destinations: a small set of key types (jobs, primary schools, GPs/health, supermarkets).
 - Outputs:

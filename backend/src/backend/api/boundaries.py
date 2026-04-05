@@ -4,40 +4,37 @@ import json
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
-from backend.db import get_db
+from backend.db import DuckDBSession, get_db
 
 router = APIRouter(prefix="/boundaries", tags=["boundaries"])
 
 
 @router.get("/region/geojson", response_class=Response)
-async def get_region_boundary(
+def get_region_boundary(
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return the Bizkaia region boundary as GeoJSON."""
-    result = await db.execute(
-        text("""
-            SELECT id, name, boundary_type,
-                   ST_AsGeoJSON(geom)::json AS geometry
-            FROM boundaries
-            WHERE tenant_id = :tid
-        """),
+    result = db.execute(
+        """
+        SELECT id, name, boundary_type,
+               ST_AsGeoJSON(geom) AS geometry
+        FROM boundaries
+        WHERE tenant_id = $tid
+        """,
         {"tid": tenant.tenant_id},
     )
-    rows = result.fetchall()
 
     features = [
         {
             "type": "Feature",
             "properties": {"id": row.id, "name": row.name, "type": row.boundary_type},
-            "geometry": row.geometry,
+            "geometry": json.loads(row.geometry),
         }
-        for row in rows
+        for row in result.fetchall()
     ]
 
     return Response(
@@ -47,30 +44,29 @@ async def get_region_boundary(
 
 
 @router.get("/municipalities/geojson", response_class=Response)
-async def get_municipalities(
+def get_municipalities(
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return all municipality boundaries as GeoJSON."""
-    result = await db.execute(
-        text("""
-            SELECT id, muni_code, name,
-                   ST_AsGeoJSON(geom)::json AS geometry
-            FROM municipalities
-            WHERE tenant_id = :tid
-            ORDER BY name
-        """),
+    result = db.execute(
+        """
+        SELECT id, muni_code, name,
+               ST_AsGeoJSON(geom) AS geometry
+        FROM municipalities
+        WHERE tenant_id = $tid
+        ORDER BY name
+        """,
         {"tid": tenant.tenant_id},
     )
-    rows = result.fetchall()
 
     features = [
         {
             "type": "Feature",
             "properties": {"id": row.id, "muni_code": row.muni_code, "name": row.name},
-            "geometry": row.geometry,
+            "geometry": json.loads(row.geometry),
         }
-        for row in rows
+        for row in result.fetchall()
     ]
 
     return Response(
@@ -80,30 +76,29 @@ async def get_municipalities(
 
 
 @router.get("/comarcas/geojson", response_class=Response)
-async def get_comarcas(
+def get_comarcas(
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return all comarca boundaries as GeoJSON."""
-    result = await db.execute(
-        text("""
-            SELECT id, comarca_code, name,
-                   ST_AsGeoJSON(geom)::json AS geometry
-            FROM comarcas
-            WHERE tenant_id = :tid
-            ORDER BY name
-        """),
+    result = db.execute(
+        """
+        SELECT id, comarca_code, name,
+               ST_AsGeoJSON(geom) AS geometry
+        FROM comarcas
+        WHERE tenant_id = $tid
+        ORDER BY name
+        """,
         {"tid": tenant.tenant_id},
     )
-    rows = result.fetchall()
 
     features = [
         {
             "type": "Feature",
             "properties": {"id": row.id, "comarca_code": row.comarca_code, "name": row.name},
-            "geometry": row.geometry,
+            "geometry": json.loads(row.geometry),
         }
-        for row in rows
+        for row in result.fetchall()
     ]
 
     return Response(
@@ -113,30 +108,29 @@ async def get_comarcas(
 
 
 @router.get("/nucleos/geojson", response_class=Response)
-async def get_nucleos(
+def get_nucleos(
     include_diseminado: bool = Query(
         False, description="Include dispersed (diseminado) areas (nucleo_num=99)"
     ),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> Response:
-    """Return EUSTAT núcleo (settlement) boundaries as GeoJSON."""
-    where = "tenant_id = :tid"
+    """Return EUSTAT nucleo (settlement) boundaries as GeoJSON."""
+    where = "tenant_id = $tid"
     if not include_diseminado:
         where += " AND nucleo_num != '99'"
 
-    result = await db.execute(
-        text(f"""
-            SELECT id, code, nucleo_num, name, entity_name,
-                   muni_code, muni_name,
-                   ST_AsGeoJSON(geom)::json AS geometry
-            FROM nucleos
-            WHERE {where}
-            ORDER BY muni_name, name
-        """),
+    result = db.execute(
+        f"""
+        SELECT id, code, nucleo_num, name, entity_name,
+               muni_code, muni_name,
+               ST_AsGeoJSON(geom) AS geometry
+        FROM nucleos
+        WHERE {where}
+        ORDER BY muni_name, name
+        """,
         {"tid": tenant.tenant_id},
     )
-    rows = result.fetchall()
 
     features = [
         {
@@ -150,9 +144,9 @@ async def get_nucleos(
                 "muni_code": row.muni_code,
                 "muni_name": row.muni_name,
             },
-            "geometry": row.geometry,
+            "geometry": json.loads(row.geometry),
         }
-        for row in rows
+        for row in result.fetchall()
     ]
 
     return Response(

@@ -9,17 +9,22 @@ Supports two CSV formats:
    column that identifies the destination type per row.
    Required columns: poi, nombre, longitud, latitud.
    Optional: weight (default 1.0).
+
+Output: Appends to destinations.parquet (GeoParquet) in serving_dir.
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import re
 from pathlib import Path
+from typing import Any
 
+import geopandas as gpd
+import pandas as pd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from shapely.geometry import Point
 
 logger = structlog.get_logger()
 
@@ -38,30 +43,37 @@ def _to_code(raw: str) -> str:
     return _NON_ALNUM.sub("_", raw.strip().lower()).strip("_")
 
 
-def _ensure_destination_type(session: Session, code: str, label: str | None = None) -> int:
-    """Get or create a destination_type by code, return its id."""
-    row = session.execute(
-        text("SELECT id FROM destination_types WHERE code = :code"),
-        {"code": code},
-    ).scalar_one_or_none()
-    if row is not None:
-        return row
+def _ensure_destination_type(
+    dest_types_path: Path,
+    code: str,
+    label: str | None = None,
+) -> int:
+    """Get or create a destination_type by code, return its id.
+
+    Reads/updates destination_types.parquet.
+    """
+    if dest_types_path.exists():
+        df = pd.read_parquet(dest_types_path)
+    else:
+        df = pd.DataFrame(columns=["id", "code", "label", "description"])
+
+    match = df[df["code"] == code]
+    if not match.empty:
+        return int(match.iloc[0]["id"])
 
     if label is None:
         label = code.replace("_", " ").title()
-    session.execute(
-        text(
-            "INSERT INTO destination_types (code, label) "
-            "VALUES (:code, :label) "
-            "ON CONFLICT (code) DO NOTHING"
-        ),
-        {"code": code, "label": label},
-    )
-    session.flush()
-    return session.execute(
-        text("SELECT id FROM destination_types WHERE code = :code"),
-        {"code": code},
-    ).scalar_one()
+
+    new_id = int(df["id"].max()) + 1 if not df.empty else 1
+    new_row = pd.DataFrame([{
+        "id": new_id,
+        "code": code,
+        "label": label,
+        "description": "",
+    }])
+    df = pd.concat([df, new_row], ignore_index=True)
+    df.to_parquet(dest_types_path, index=False)
+    return new_id
 
 
 def _validate_row(
@@ -129,15 +141,48 @@ def _is_unified_csv(headers: set[str]) -> bool:
     return REQUIRED_COLUMNS_UNIFIED.issubset(headers)
 
 
+def _append_destinations(new_gdf: gpd.GeoDataFrame, serving: Path) -> None:
+    """Append new destinations to the existing destinations.parquet, or create it."""
+    dest_path = serving / "destinations.parquet"
+    if dest_path.exists():
+        existing = gpd.read_parquet(dest_path)
+        combined = pd.concat([existing, new_gdf], ignore_index=True)
+        combined = gpd.GeoDataFrame(combined, geometry="geometry", crs="EPSG:4326")
+    else:
+        combined = new_gdf
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_parquet(dest_path)
+
+
+def _remove_destinations_by_type(serving: Path, type_id: int) -> int:
+    """Remove destinations with given type_id from destinations.parquet. Returns deleted count."""
+    dest_path = serving / "destinations.parquet"
+    if not dest_path.exists():
+        return 0
+    existing = gpd.read_parquet(dest_path)
+    before = len(existing)
+    filtered = existing[existing["type_id"] != type_id]
+    deleted = before - len(filtered)
+    if deleted > 0:
+        if filtered.empty:
+            dest_path.unlink()
+        else:
+            filtered = gpd.GeoDataFrame(filtered, geometry="geometry", crs="EPSG:4326")
+            filtered.to_parquet(dest_path)
+    return deleted
+
+
 def _import_unified_csv(
-    session: Session,
     tenant_id: str,
+    serving_dir: Path,
     csv_path: Path,
     *,
     clear_existing: bool,
     log: structlog.stdlib.BoundLogger,
 ) -> dict[str, int]:
     """Import a unified CSV where a ``poi`` column identifies the type."""
+    serving = Path(serving_dir)
+    dest_types_path = serving / "destination_types.parquet"
     results: dict[str, int] = {}
     skipped = 0
 
@@ -152,16 +197,14 @@ def _import_unified_csv(
                 if raw_type:
                     type_codes_seen.add(_to_code(raw_type))
         for code in type_codes_seen:
-            type_id = _ensure_destination_type(session, code)
-            deleted = session.execute(
-                text(
-                    "DELETE FROM destinations "
-                    "WHERE tenant_id = :tid AND type_id = :type_id"
-                ),
-                {"tid": tenant_id, "type_id": type_id},
-            ).rowcount
+            type_id = _ensure_destination_type(dest_types_path, code)
+            deleted = _remove_destinations_by_type(serving, type_id)
             if deleted:
                 log.info("poi_import.cleared_existing", type_code=code, deleted=deleted)
+
+    # Second pass: collect all rows
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
 
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -188,42 +231,34 @@ def _import_unified_csv(
                 continue
 
             name, lon, lat, weight = parsed
-            type_id = _ensure_destination_type(session, code, label=raw_type)
+            type_id = _ensure_destination_type(dest_types_path, code, label=raw_type)
 
-            session.execute(
-                text("""
-                    INSERT INTO destinations
-                        (tenant_id, type_id, name, geom, weight, metadata)
-                    VALUES (
-                        :tid, :type_id, :name,
-                        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                        :weight, '{}'::jsonb
-                    )
-                """),
-                {
-                    "tid": tenant_id,
-                    "type_id": type_id,
-                    "name": name,
-                    "lon": lon,
-                    "lat": lat,
-                    "weight": weight,
-                },
-            )
+            records.append({
+                "tenant_id": tenant_id,
+                "type_id": type_id,
+                "name": name,
+                "weight": weight,
+                "metadata": "{}",
+            })
+            geometries.append(Point(lon, lat))
             results[code] = results.get(code, 0) + 1
 
-    session.commit()
+    if records:
+        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+        _append_destinations(gdf, serving)
+
     log.info("poi_import.unified_done", imported=results, skipped=skipped)
     return results
 
 
 def import_pois_from_csv(
-    session: Session,
     tenant_id: str,
+    serving_dir: str | Path,
     pois_dir: Path,
     *,
     clear_existing: bool = False,
 ) -> dict[str, int]:
-    """Import all CSV files from pois_dir into the destinations table.
+    """Import all CSV files from pois_dir into destinations.parquet.
 
     Detects the CSV format automatically:
     - If a CSV contains ``poi, nombre, longitud, latitud`` columns it is
@@ -232,15 +267,17 @@ def import_pois_from_csv(
       columns: name, lon, lat, weight).
 
     Args:
-        session: SQLAlchemy session.
         tenant_id: Tenant UUID string.
+        serving_dir: Directory for output Parquet files.
         pois_dir: Directory containing CSV files.
         clear_existing: If True, delete existing destinations for each
             type before inserting.
 
     Returns:
-        Dict mapping destination type code → number of rows imported.
+        Dict mapping destination type code -> number of rows imported.
     """
+    serving = Path(serving_dir)
+    dest_types_path = serving / "destination_types.parquet"
     log = logger.bind(tenant_id=tenant_id, pois_dir=str(pois_dir))
 
     if not pois_dir.is_dir():
@@ -268,7 +305,7 @@ def import_pois_from_csv(
         if _is_unified_csv(headers):
             log_file.info("poi_import.detected_unified_format")
             file_results = _import_unified_csv(
-                session, tenant_id, csv_path,
+                tenant_id, serving, csv_path,
                 clear_existing=clear_existing, log=log_file,
             )
             for code, count in file_results.items():
@@ -288,21 +325,17 @@ def import_pois_from_csv(
             )
             continue
 
-        type_id = _ensure_destination_type(session, type_code)
+        type_id = _ensure_destination_type(dest_types_path, type_code)
 
         if clear_existing:
-            deleted = session.execute(
-                text(
-                    "DELETE FROM destinations "
-                    "WHERE tenant_id = :tid AND type_id = :type_id"
-                ),
-                {"tid": tenant_id, "type_id": type_id},
-            ).rowcount
+            deleted = _remove_destinations_by_type(serving, type_id)
             if deleted:
                 log_file.info("poi_import.cleared_existing", deleted=deleted)
 
         count = 0
         skipped = 0
+        records: list[dict[str, Any]] = []
+        geometries: list[Point] = []
 
         with open(csv_path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
@@ -314,28 +347,20 @@ def import_pois_from_csv(
                     continue
 
                 name, lon, lat, weight = parsed
-                session.execute(
-                    text("""
-                        INSERT INTO destinations
-                            (tenant_id, type_id, name, geom, weight, metadata)
-                        VALUES (
-                            :tid, :type_id, :name,
-                            ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                            :weight, '{}'::jsonb
-                        )
-                    """),
-                    {
-                        "tid": tenant_id,
-                        "type_id": type_id,
-                        "name": name,
-                        "lon": lon,
-                        "lat": lat,
-                        "weight": weight,
-                    },
-                )
+                records.append({
+                    "tenant_id": tenant_id,
+                    "type_id": type_id,
+                    "name": name,
+                    "weight": weight,
+                    "metadata": "{}",
+                })
+                geometries.append(Point(lon, lat))
                 count += 1
 
-        session.commit()
+        if records:
+            gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+            _append_destinations(gdf, serving)
+
         results[type_code] = count
         log_file.info(
             "poi_import.file_done", imported=count, skipped=skipped

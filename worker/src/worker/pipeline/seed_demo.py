@@ -1,21 +1,26 @@
 """Generate synthetic demo data for local development.
 
 Creates dummy destinations and distance-based travel times so the full
-pipeline (grid → population → travel times → scores) can run without
+pipeline (grid -> population -> travel times -> scores) can run without
 real OSM/GTFS data or the R5R routing container.
 
 Generates travel times for multiple departure time slots to demonstrate
 time-of-day variation in accessibility.
+
+Output: destinations.parquet + travel_times.parquet in the serving directory.
 """
 
 from __future__ import annotations
 
 import math
 import random
+from pathlib import Path
+from typing import Any
 
+import geopandas as gpd
+import pandas as pd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from shapely.geometry import Point
 
 logger = structlog.get_logger()
 
@@ -24,8 +29,7 @@ logger = structlog.get_logger()
 BOUNDARY_LON_MIN, BOUNDARY_LON_MAX = -2.97, -2.90
 BOUNDARY_LAT_MIN, BOUNDARY_LAT_MAX = 43.24, 43.29
 
-# Approximate walking/transit speeds for synthetic travel times
-WALK_SPEED_KMH = 3.6
+# Approximate transit speed for synthetic travel times
 TRANSIT_SPEED_KMH = 15.0
 TRANSIT_WAIT_MIN = 5.0
 MAX_TRAVEL_TIME = 60.0
@@ -52,16 +56,25 @@ for _h in range(24):
             # Evening: slower, longer waits
             _TRANSIT_TIME_MULTIPLIERS[_slot] = (1.3, 2.5)
         else:
-            # Night (23:00 – 06:30): much slower / no service
+            # Night (23:00 - 06:30): much slower / no service
             _TRANSIT_TIME_MULTIPLIERS[_slot] = (2.0, 4.0)
 
+
+# Destination type code -> id mapping (must match destination_types.parquet)
+# These IDs correspond to the DESTINATION_TYPES list in geoeuskadi.py
+DEST_TYPE_IDS: dict[str, int] = {
+    "jobs": 14,
+    "school_primary": 11,
+    "health_gp": 12,
+    "supermarket": 13,
+}
 
 # Synthetic destination locations within the Bilbao demo area
 # (lon, lat, name) tuples grouped by destination type code
 DEMO_DESTINATIONS: dict[str, list[tuple[float, float, str]]] = {
     "jobs": [
         (-2.935, 43.263, "Abando Business District"),
-        (-2.945, 43.265, "Gran Vía Office Park"),
+        (-2.945, 43.265, "Gran Via Office Park"),
         (-2.924, 43.260, "Casco Viejo Commerce"),
         (-2.950, 43.275, "Deusto University Campus"),
         (-2.915, 43.257, "Bilbao La Vieja Workshops"),
@@ -100,56 +113,45 @@ def _haversine_km(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def seed_destinations(session: Session, tenant_id: str) -> int:
-    """Insert synthetic destinations for all four purpose types.
+def seed_destinations(tenant_id: str, serving_dir: str | Path) -> int:
+    """Write synthetic destinations for all four purpose types.
 
+    Writes destinations.parquet as GeoParquet (overwrites existing).
     Returns the number of destinations created.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id)
 
-    # Clear existing destinations for this tenant
-    session.execute(
-        text("DELETE FROM destinations WHERE tenant_id = :tid"),
-        {"tid": tenant_id},
-    )
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
 
-    count = 0
     for type_code, locations in DEMO_DESTINATIONS.items():
-        # Look up the destination_type id
-        type_id = session.execute(
-            text("SELECT id FROM destination_types WHERE code = :code"),
-            {"code": type_code},
-        ).scalar_one()
+        type_id = DEST_TYPE_IDS[type_code]
 
         for lon, lat, name in locations:
-            session.execute(
-                text("""
-                    INSERT INTO destinations (tenant_id, type_id, name, geom, weight)
-                    VALUES (
-                        :tid, :type_id, :name,
-                        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                        :weight
-                    )
-                """),
-                {
-                    "tid": tenant_id,
-                    "type_id": type_id,
-                    "name": name,
-                    "lon": lon,
-                    "lat": lat,
-                    "weight": 1.0,
-                },
-            )
-            count += 1
+            records.append({
+                "tenant_id": tenant_id,
+                "type_id": type_id,
+                "name": name,
+                "weight": 1.0,
+                "metadata": "{}",
+            })
+            geometries.append(Point(lon, lat))
 
-    session.commit()
+    gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+    gdf["id"] = range(1, len(gdf) + 1)
+    out_path = serving / "destinations.parquet"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    gdf.to_parquet(out_path)
+
+    count = len(records)
     log.info("seed_destinations_complete", count=count)
     return count
 
 
 def seed_travel_times(
-    session: Session,
     tenant_id: str,
+    serving_dir: str | Path,
     *,
     sample_fraction: float = 1.0,
 ) -> dict[str, int]:
@@ -159,36 +161,38 @@ def seed_travel_times(
     computes an approximate travel time using haversine distance and
     mode-specific speeds with time-of-day variation.
 
-    Walk times are constant across the day; transit times vary to
-    simulate peak vs off-peak service.
+    Reads grid_cells.parquet and destinations.parquet from serving_dir.
+    Writes travel_times.parquet.
 
     Args:
-        sample_fraction: Fraction of cells to process (0–1). Use < 1.0
+        sample_fraction: Fraction of cells to process (0-1). Use < 1.0
             to speed up seeding on large grids.
 
     Returns dict with counts per mode.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id)
     log.info("seed_travel_times_start")
 
-    # Clear existing travel times
-    session.execute(
-        text("DELETE FROM travel_times WHERE tenant_id = :tid"),
-        {"tid": tenant_id},
-    )
+    # Read grid cells
+    grid_path = serving / "grid_cells.parquet"
+    if not grid_path.exists():
+        raise ValueError("No grid_cells.parquet found -- run build-grid first")
 
-    # Fetch grid cell centroids
-    cells = session.execute(
-        text("""
-            SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat
-            FROM grid_cells
-            WHERE tenant_id = :tid
-        """),
-        {"tid": tenant_id},
-    ).fetchall()
+    grid_gdf = gpd.read_parquet(grid_path)
+    grid_gdf = grid_gdf[grid_gdf["tenant_id"] == tenant_id].copy()
 
-    if not cells:
-        raise ValueError("No grid cells found — run build-grid first")
+    if grid_gdf.empty:
+        raise ValueError("No grid cells found for tenant -- run build-grid first")
+
+    # Extract cell centroids — geometry column may be named 'geom'
+    geo_col = grid_gdf.geometry.name  # active geometry column name
+    cells: list[tuple[int, float, float]] = []
+    for _, row in grid_gdf.iterrows():
+        cell_id = row.get("id", row.name)
+        geom = row[geo_col]
+        centroid = geom.centroid if hasattr(geom, "centroid") else geom
+        cells.append((int(cell_id), centroid.x, centroid.y))
 
     # Optionally sample cells for faster seeding
     if sample_fraction < 1.0:
@@ -196,44 +200,32 @@ def seed_travel_times(
         k = max(1, int(len(cells) * sample_fraction))
         cells = rng.sample(cells, k)
 
-    # Fetch destinations
-    dests = session.execute(
-        text("SELECT id, ST_X(geom) AS lon, ST_Y(geom) AS lat FROM destinations WHERE tenant_id = :tid"),
-        {"tid": tenant_id},
-    ).fetchall()
+    # Read destinations
+    dest_path = serving / "destinations.parquet"
+    if not dest_path.exists():
+        raise ValueError("No destinations.parquet found -- run seed-destinations first")
 
-    if not dests:
-        raise ValueError("No destinations found — run seed-destinations first")
+    dest_gdf = gpd.read_parquet(dest_path)
+    dest_gdf = dest_gdf[dest_gdf["tenant_id"] == tenant_id].copy()
 
-    batch: list[dict[str, object]] = []
-    counts: dict[str, int] = {"WALK": 0, "TRANSIT": 0}
-    batch_size = 5000
+    if dest_gdf.empty:
+        raise ValueError("No destinations found -- run seed-destinations first")
+
+    dest_geo_col = dest_gdf.geometry.name
+    dests: list[tuple[int, float, float]] = []
+    for _, row in dest_gdf.iterrows():
+        dest_id = row.get("id", row.name)
+        pt = row[dest_geo_col]
+        dests.append((int(dest_id), pt.x, pt.y))
+
+    # Generate travel times (TRANSIT only)
+    rows: list[dict[str, object]] = []
+    counts: dict[str, int] = {"TRANSIT": 0}
 
     for cell_id, cell_lon, cell_lat in cells:
         for dest_id, dest_lon, dest_lat in dests:
             dist_km = _haversine_km(cell_lon, cell_lat, dest_lon, dest_lat)
 
-            # Walk: constant speed, generate for all slots
-            for slot in DEMO_DEPARTURE_SLOTS:
-                jitter = 0.85 + (hash((cell_id, dest_id, "WALK")) % 31) / 100.0
-                walk_min = (dist_km / WALK_SPEED_KMH * 60.0) * jitter
-                if walk_min <= MAX_TRAVEL_TIME:
-                    walk_min = round(max(1.0, walk_min), 1)
-                    batch.append({
-                        "tenant_id": tenant_id,
-                        "origin_cell_id": cell_id,
-                        "destination_id": dest_id,
-                        "mode": "WALK",
-                        "departure_time": slot,
-                        "travel_time_minutes": walk_min,
-                    })
-                    counts["WALK"] += 1
-
-                    if len(batch) >= batch_size:
-                        _insert_batch(session, batch)
-                        batch = []
-
-            # Transit: time-varying speed and wait
             for slot in DEMO_DEPARTURE_SLOTS:
                 speed_mult, wait_mult = _TRANSIT_TIME_MULTIPLIERS[slot]
                 jitter = 0.85 + (hash((cell_id, dest_id, "TRANSIT")) % 31) / 100.0
@@ -244,7 +236,7 @@ def seed_travel_times(
 
                 if transit_min <= MAX_TRAVEL_TIME:
                     transit_min = round(max(1.0, transit_min), 1)
-                    batch.append({
+                    rows.append({
                         "tenant_id": tenant_id,
                         "origin_cell_id": cell_id,
                         "destination_id": dest_id,
@@ -254,29 +246,12 @@ def seed_travel_times(
                     })
                     counts["TRANSIT"] += 1
 
-                    if len(batch) >= batch_size:
-                        _insert_batch(session, batch)
-                        batch = []
-
-    if batch:
-        _insert_batch(session, batch)
-
-    session.commit()
+    # Write to Parquet
+    if rows:
+        df = pd.DataFrame(rows)
+        out_path = serving / "travel_times.parquet"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(out_path, index=False)
 
     log.info("seed_travel_times_complete", **counts)
     return counts
-
-
-def _insert_batch(session: Session, batch: list[dict[str, object]]) -> None:
-    """Insert a batch of travel time records (no upsert needed — table was cleared)."""
-    session.execute(
-        text("""
-            INSERT INTO travel_times
-                (tenant_id, origin_cell_id, destination_id, mode,
-                 departure_time, travel_time_minutes)
-            VALUES
-                (:tenant_id, :origin_cell_id, :destination_id, :mode,
-                 :departure_time, :travel_time_minutes)
-        """),
-        batch,
-    )

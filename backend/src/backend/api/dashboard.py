@@ -7,15 +7,13 @@ municipality/comarca rankings, and service coverage thresholds.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.cells import DEFAULT_DEPARTURE_TIME, _validate_departure_time
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
-from backend.db import get_db
+from backend.db import DuckDBSession, get_db
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -91,63 +89,62 @@ class ServiceCoverage(BaseModel):
 
 
 @router.get("/summary", response_model=DashboardSummary)
-async def get_summary(
+def get_summary(
     departure_time: str = Query(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time slot (HH:MM)",
     ),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> DashboardSummary:
     """High-level KPIs for the dashboard header."""
     dep_time = _validate_departure_time(departure_time)
 
-    result = await db.execute(
-        text("""
-            SELECT
-                COUNT(*)                                        AS total_cells,
-                COUNT(*) FILTER (WHERE gc.population > 0)       AS populated_cells,
-                COALESCE(SUM(gc.population), 0)                 AS total_population,
-                COUNT(cs.id)                                    AS cells_with_scores,
-                AVG(cs.combined_score_normalized)                AS avg_score,
-                CASE
-                    WHEN SUM(gc.population) > 0 THEN
-                        SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
-                        / SUM(gc.population)
-                    ELSE AVG(cs.combined_score_normalized)
-                END                                             AS weighted_avg_score,
-                PERCENTILE_CONT(0.5) WITHIN GROUP
-                    (ORDER BY cs.combined_score_normalized)
-                    FILTER (WHERE cs.combined_score_normalized IS NOT NULL)
-                                                                AS median_score
-            FROM grid_cells gc
-            LEFT JOIN combined_scores cs
-                ON cs.cell_id = gc.id
-                AND cs.tenant_id = gc.tenant_id
-                AND cs.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
-        """),
+    result = db.execute(
+        """
+        SELECT
+            COUNT(*)                                        AS total_cells,
+            COUNT(*) FILTER (WHERE gc.population > 0)       AS populated_cells,
+            COALESCE(SUM(gc.population), 0)                 AS total_population,
+            COUNT(cs.id)                                    AS cells_with_scores,
+            AVG(cs.combined_score_normalized)                AS avg_score,
+            CASE
+                WHEN SUM(gc.population) > 0 THEN
+                    SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
+                    / SUM(gc.population)
+                ELSE AVG(cs.combined_score_normalized)
+            END                                             AS weighted_avg_score,
+            quantile_cont(cs.combined_score_normalized, 0.5)
+                                                            AS median_score
+        FROM grid_cells gc
+        LEFT JOIN combined_scores cs
+            ON cs.cell_id = gc.id
+            AND cs.tenant_id = gc.tenant_id
+            AND cs.departure_time = $dep_time
+        WHERE gc.tenant_id = $tid
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time},
     )
     main = result.one()
 
-    counts = await db.execute(
-        text("""
-            SELECT
-                (SELECT COUNT(*) FROM destinations WHERE tenant_id = :tid)
-                    AS dest_count,
-                (SELECT COUNT(*) FROM gtfs_stops)
-                    AS stop_count,
-                (SELECT COUNT(*) FROM gtfs_routes)
-                    AS route_count,
-                (SELECT COUNT(*) FROM municipalities WHERE tenant_id = :tid)
-                    AS muni_count,
-                (SELECT COUNT(*) FROM comarcas WHERE tenant_id = :tid)
-                    AS comarca_count
-        """),
-        {"tid": tenant.tenant_id},
-    )
-    c = counts.one()
+    # Count auxiliary tables — some may not exist in demo/minimal setups
+    def _safe_count(table: str, where: str = "") -> int:
+        try:
+            q = f"SELECT COUNT(*) AS c FROM {table}"
+            if where:
+                q += f" WHERE {where}"
+            return db.execute(q, {"tid": tenant.tenant_id}).one().c
+        except Exception:
+            return 0
+
+    class _Counts:
+        dest_count = _safe_count("destinations", "tenant_id = $tid")
+        stop_count = _safe_count("gtfs_stops")
+        route_count = _safe_count("gtfs_routes")
+        muni_count = _safe_count("municipalities", "tenant_id = $tid")
+        comarca_count = _safe_count("comarcas", "tenant_id = $tid")
+
+    c = _Counts()
 
     return DashboardSummary(
         total_cells=main.total_cells,
@@ -166,38 +163,38 @@ async def get_summary(
 
 
 @router.get("/score-distribution", response_model=list[ScoreDistributionBucket])
-async def get_score_distribution(
+def get_score_distribution(
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[ScoreDistributionBucket]:
     """Score distribution histogram (10 buckets, 0-100)."""
     dep_time = _validate_departure_time(departure_time)
 
-    result = await db.execute(
-        text("""
-            WITH scored AS (
-                SELECT gc.population, cs.combined_score_normalized AS score
-                FROM grid_cells gc
-                JOIN combined_scores cs
-                    ON cs.cell_id = gc.id
-                    AND cs.tenant_id = gc.tenant_id
-                    AND cs.departure_time = :dep_time
-                WHERE gc.tenant_id = :tid
-                    AND cs.combined_score_normalized IS NOT NULL
-            ),
-            buckets AS (
-                SELECT
-                    LEAST(width_bucket(score, 0, 100, 10), 10) AS bucket,
-                    COUNT(*)           AS cell_count,
-                    COALESCE(SUM(population), 0) AS population
-                FROM scored
-                GROUP BY 1
-            )
-            SELECT bucket, cell_count, population
-            FROM buckets
-            ORDER BY bucket
-        """),
+    result = db.execute(
+        """
+        WITH scored AS (
+            SELECT gc.population, cs.combined_score_normalized AS score
+            FROM grid_cells gc
+            JOIN combined_scores cs
+                ON cs.cell_id = gc.id
+                AND cs.tenant_id = gc.tenant_id
+                AND cs.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
+                AND cs.combined_score_normalized IS NOT NULL
+        ),
+        buckets AS (
+            SELECT
+                LEAST(GREATEST(CAST(floor(score / 10) + 1 AS INTEGER), 1), 10) AS bucket,
+                COUNT(*)           AS cell_count,
+                COALESCE(SUM(population), 0) AS population
+            FROM scored
+            GROUP BY 1
+        )
+        SELECT bucket, cell_count, population
+        FROM buckets
+        ORDER BY bucket
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time},
     )
 
@@ -225,43 +222,42 @@ async def get_score_distribution(
 
 
 @router.get("/purpose-breakdown", response_model=list[PurposeBreakdown])
-async def get_purpose_breakdown(
+def get_purpose_breakdown(
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[PurposeBreakdown]:
     """Average scores and travel times broken down by mode and purpose."""
     dep_time = _validate_departure_time(departure_time)
 
-    # Fetch destination type labels
-    dt_result = await db.execute(
-        text("SELECT code, label FROM destination_types ORDER BY code")
+    dt_result = db.execute(
+        "SELECT code, label FROM destination_types ORDER BY code"
     )
     label_map: dict[str, str] = {
         row.code: row.label for row in dt_result.fetchall()
     }
 
-    result = await db.execute(
-        text("""
-            SELECT
-                cs.mode,
-                cs.purpose,
-                AVG(cs.score_normalized)  AS avg_score,
-                CASE
-                    WHEN SUM(gc.population) > 0 THEN
-                        SUM(gc.population * COALESCE(cs.score_normalized, 0))
-                        / SUM(gc.population)
-                    ELSE AVG(cs.score_normalized)
-                END                       AS weighted_avg_score,
-                COUNT(*)                  AS cell_count
-            FROM connectivity_scores cs
-            JOIN grid_cells gc
-                ON gc.id = cs.cell_id AND gc.tenant_id = cs.tenant_id
-            WHERE cs.tenant_id = :tid
-                AND cs.departure_time = :dep_time
-            GROUP BY cs.mode, cs.purpose
-            ORDER BY cs.mode, cs.purpose
-        """),
+    result = db.execute(
+        """
+        SELECT
+            cs.mode,
+            cs.purpose,
+            AVG(cs.score_normalized)  AS avg_score,
+            CASE
+                WHEN SUM(gc.population) > 0 THEN
+                    SUM(gc.population * COALESCE(cs.score_normalized, 0))
+                    / SUM(gc.population)
+                ELSE AVG(cs.score_normalized)
+            END                       AS weighted_avg_score,
+            COUNT(*)                  AS cell_count
+        FROM connectivity_scores cs
+        JOIN grid_cells gc
+            ON gc.id = cs.cell_id AND gc.tenant_id = cs.tenant_id
+        WHERE cs.tenant_id = $tid
+            AND cs.departure_time = $dep_time
+        GROUP BY cs.mode, cs.purpose
+        ORDER BY cs.mode, cs.purpose
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time},
     )
     scores_map: dict[tuple[str, str], dict] = {}
@@ -272,18 +268,17 @@ async def get_purpose_breakdown(
             "cell_count": row.cell_count,
         }
 
-    # Also fetch average travel times
-    tt_result = await db.execute(
-        text("""
-            SELECT
-                mt.mode,
-                mt.purpose,
-                AVG(mt.min_travel_time_minutes) AS avg_tt
-            FROM min_travel_times mt
-            WHERE mt.tenant_id = :tid
-                AND mt.departure_time = :dep_time
-            GROUP BY mt.mode, mt.purpose
-        """),
+    tt_result = db.execute(
+        """
+        SELECT
+            mt.mode,
+            mt.purpose,
+            AVG(mt.min_travel_time_minutes) AS avg_tt
+        FROM min_travel_times mt
+        WHERE mt.tenant_id = $tid
+            AND mt.departure_time = $dep_time
+        GROUP BY mt.mode, mt.purpose
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time},
     )
     tt_map: dict[tuple[str, str], float | None] = {}
@@ -306,40 +301,40 @@ async def get_purpose_breakdown(
 
 
 @router.get("/municipality-ranking", response_model=list[AreaRanking])
-async def get_municipality_ranking(
+def get_municipality_ranking(
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[AreaRanking]:
     """Municipality-level aggregated connectivity scores (spatial join)."""
     dep_time = _validate_departure_time(departure_time)
 
-    result = await db.execute(
-        text("""
-            SELECT
-                m.name,
-                m.muni_code                        AS code,
-                COUNT(gc.id)                       AS cell_count,
-                COALESCE(SUM(gc.population), 0)    AS population,
-                AVG(cs.combined_score_normalized)   AS avg_score,
-                CASE
-                    WHEN SUM(gc.population) > 0 THEN
-                        SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
-                        / SUM(gc.population)
-                    ELSE AVG(cs.combined_score_normalized)
-                END                                AS weighted_avg_score
-            FROM municipalities m
-            JOIN grid_cells gc
-                ON gc.tenant_id = m.tenant_id
-                AND ST_Intersects(gc.centroid, m.geom)
-            LEFT JOIN combined_scores cs
-                ON cs.cell_id = gc.id
-                AND cs.tenant_id = gc.tenant_id
-                AND cs.departure_time = :dep_time
-            WHERE m.tenant_id = :tid
-            GROUP BY m.name, m.muni_code
-            ORDER BY weighted_avg_score DESC NULLS LAST
-        """),
+    result = db.execute(
+        """
+        SELECT
+            m.name,
+            m.muni_code                        AS code,
+            COUNT(gc.id)                       AS cell_count,
+            COALESCE(SUM(gc.population), 0)    AS population,
+            AVG(cs.combined_score_normalized)   AS avg_score,
+            CASE
+                WHEN SUM(gc.population) > 0 THEN
+                    SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
+                    / SUM(gc.population)
+                ELSE AVG(cs.combined_score_normalized)
+            END                                AS weighted_avg_score
+        FROM municipalities m
+        JOIN grid_cells gc
+            ON gc.tenant_id = m.tenant_id
+            AND ST_Intersects(gc.centroid, m.geom)
+        LEFT JOIN combined_scores cs
+            ON cs.cell_id = gc.id
+            AND cs.tenant_id = gc.tenant_id
+            AND cs.departure_time = $dep_time
+        WHERE m.tenant_id = $tid
+        GROUP BY m.name, m.muni_code
+        ORDER BY weighted_avg_score DESC NULLS LAST
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time},
     )
 
@@ -357,40 +352,40 @@ async def get_municipality_ranking(
 
 
 @router.get("/comarca-ranking", response_model=list[AreaRanking])
-async def get_comarca_ranking(
+def get_comarca_ranking(
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[AreaRanking]:
     """Comarca-level aggregated connectivity scores (spatial join)."""
     dep_time = _validate_departure_time(departure_time)
 
-    result = await db.execute(
-        text("""
-            SELECT
-                c.name,
-                c.comarca_code                     AS code,
-                COUNT(gc.id)                       AS cell_count,
-                COALESCE(SUM(gc.population), 0)    AS population,
-                AVG(cs.combined_score_normalized)   AS avg_score,
-                CASE
-                    WHEN SUM(gc.population) > 0 THEN
-                        SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
-                        / SUM(gc.population)
-                    ELSE AVG(cs.combined_score_normalized)
-                END                                AS weighted_avg_score
-            FROM comarcas c
-            JOIN grid_cells gc
-                ON gc.tenant_id = c.tenant_id
-                AND ST_Intersects(gc.centroid, c.geom)
-            LEFT JOIN combined_scores cs
-                ON cs.cell_id = gc.id
-                AND cs.tenant_id = gc.tenant_id
-                AND cs.departure_time = :dep_time
-            WHERE c.tenant_id = :tid
-            GROUP BY c.name, c.comarca_code
-            ORDER BY weighted_avg_score DESC NULLS LAST
-        """),
+    result = db.execute(
+        """
+        SELECT
+            c.name,
+            c.comarca_code                     AS code,
+            COUNT(gc.id)                       AS cell_count,
+            COALESCE(SUM(gc.population), 0)    AS population,
+            AVG(cs.combined_score_normalized)   AS avg_score,
+            CASE
+                WHEN SUM(gc.population) > 0 THEN
+                    SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
+                    / SUM(gc.population)
+                ELSE AVG(cs.combined_score_normalized)
+            END                                AS weighted_avg_score
+        FROM comarcas c
+        JOIN grid_cells gc
+            ON gc.tenant_id = c.tenant_id
+            AND ST_Intersects(gc.centroid, c.geom)
+        LEFT JOIN combined_scores cs
+            ON cs.cell_id = gc.id
+            AND cs.tenant_id = gc.tenant_id
+            AND cs.departure_time = $dep_time
+        WHERE c.tenant_id = $tid
+        GROUP BY c.name, c.comarca_code
+        ORDER BY weighted_avg_score DESC NULLS LAST
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time},
     )
 
@@ -408,53 +403,51 @@ async def get_comarca_ranking(
 
 
 @router.get("/service-coverage", response_model=list[ServiceCoverage])
-async def get_service_coverage(
+def get_service_coverage(
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[ServiceCoverage]:
     """Percentage of population within travel-time thresholds per service."""
     dep_time = _validate_departure_time(departure_time)
 
-    # Fetch destination type labels
-    dt_result = await db.execute(
-        text("SELECT code, label FROM destination_types ORDER BY code")
+    dt_result = db.execute(
+        "SELECT code, label FROM destination_types ORDER BY code"
     )
     label_map: dict[str, str] = {
         row.code: row.label for row in dt_result.fetchall()
     }
 
-    result = await db.execute(
-        text("""
-            SELECT
-                mt.purpose,
-                mt.mode,
-                COUNT(*)                             AS total_cells,
-                COALESCE(SUM(gc.population), 0)      AS total_population,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 15), 0)
-                                                     AS pop_15min,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 30), 0)
-                                                     AS pop_30min,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 45), 0)
-                                                     AS pop_45min,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 60), 0)
-                                                     AS pop_60min,
-                AVG(mt.min_travel_time_minutes)      AS avg_tt,
-                PERCENTILE_CONT(0.5) WITHIN GROUP
-                    (ORDER BY mt.min_travel_time_minutes)
-                                                     AS median_tt
-            FROM min_travel_times mt
-            JOIN grid_cells gc
-                ON gc.id = mt.cell_id AND gc.tenant_id = mt.tenant_id
-            WHERE mt.tenant_id = :tid
-                AND mt.departure_time = :dep_time
-            GROUP BY mt.purpose, mt.mode
-            ORDER BY mt.purpose, mt.mode
-        """),
+    result = db.execute(
+        """
+        SELECT
+            mt.purpose,
+            mt.mode,
+            COUNT(*)                             AS total_cells,
+            COALESCE(SUM(gc.population), 0)      AS total_population,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 15), 0)
+                                                 AS pop_15min,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 30), 0)
+                                                 AS pop_30min,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 45), 0)
+                                                 AS pop_45min,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 60), 0)
+                                                 AS pop_60min,
+            AVG(mt.min_travel_time_minutes)      AS avg_tt,
+            quantile_cont(mt.min_travel_time_minutes, 0.5)
+                                                 AS median_tt
+        FROM min_travel_times mt
+        JOIN grid_cells gc
+            ON gc.id = mt.cell_id AND gc.tenant_id = mt.tenant_id
+        WHERE mt.tenant_id = $tid
+            AND mt.departure_time = $dep_time
+        GROUP BY mt.purpose, mt.mode
+        ORDER BY mt.purpose, mt.mode
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time},
     )
 
@@ -492,88 +485,85 @@ class AreaDetail(BaseModel):
     service_coverage: list[ServiceCoverage]
 
 
-async def _area_detail(
+def _area_detail(
     *,
     table: str,
     code_col: str,
     code_value: str,
     dep_time: str,
     tenant: TenantContext,
-    db: AsyncSession,
+    db: DuckDBSession,
 ) -> AreaDetail:
     """Shared logic for comarca / municipality detail endpoints."""
-    # Fetch destination type labels
-    dt_result = await db.execute(
-        text("SELECT code, label FROM destination_types ORDER BY code")
+    dt_result = db.execute(
+        "SELECT code, label FROM destination_types ORDER BY code"
     )
     label_map: dict[str, str] = {
         row.code: row.label for row in dt_result.fetchall()
     }
 
     # Summary
-    summary = await db.execute(
-        text(f"""
-            SELECT
-                a.name,
-                a.{code_col}                           AS code,
-                COUNT(gc.id)                           AS cell_count,
-                COALESCE(SUM(gc.population), 0)        AS population,
-                AVG(cs.combined_score_normalized)       AS avg_score,
-                CASE
-                    WHEN SUM(gc.population) > 0 THEN
-                        SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
-                        / SUM(gc.population)
-                    ELSE AVG(cs.combined_score_normalized)
-                END                                    AS weighted_avg_score
-            FROM {table} a
-            JOIN grid_cells gc
-                ON gc.tenant_id = a.tenant_id
-                AND ST_Intersects(gc.centroid, a.geom)
-            LEFT JOIN combined_scores cs
-                ON cs.cell_id = gc.id
-                AND cs.tenant_id = gc.tenant_id
-                AND cs.departure_time = :dep_time
-            WHERE a.tenant_id = :tid AND a.{code_col} = :code
-            GROUP BY a.name, a.{code_col}
-        """),
+    summary = db.execute(
+        f"""
+        SELECT
+            a.name,
+            a.{code_col}                           AS code,
+            COUNT(gc.id)                           AS cell_count,
+            COALESCE(SUM(gc.population), 0)        AS population,
+            AVG(cs.combined_score_normalized)       AS avg_score,
+            CASE
+                WHEN SUM(gc.population) > 0 THEN
+                    SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
+                    / SUM(gc.population)
+                ELSE AVG(cs.combined_score_normalized)
+            END                                    AS weighted_avg_score
+        FROM {table} a
+        JOIN grid_cells gc
+            ON gc.tenant_id = a.tenant_id
+            AND ST_Intersects(gc.centroid, a.geom)
+        LEFT JOIN combined_scores cs
+            ON cs.cell_id = gc.id
+            AND cs.tenant_id = gc.tenant_id
+            AND cs.departure_time = $dep_time
+        WHERE a.tenant_id = $tid AND a.{code_col} = $code
+        GROUP BY a.name, a.{code_col}
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
     )
     s = summary.one_or_none()
     if s is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Area not found")
 
     # Purpose breakdown within area
-    pb_result = await db.execute(
-        text(f"""
-            SELECT
-                cs.mode,
-                cs.purpose,
-                AVG(cs.score_normalized)  AS avg_score,
-                CASE
-                    WHEN SUM(gc.population) > 0 THEN
-                        SUM(gc.population * COALESCE(cs.score_normalized, 0))
-                        / SUM(gc.population)
-                    ELSE AVG(cs.score_normalized)
-                END                       AS weighted_avg_score,
-                COUNT(*)                  AS cell_count
-            FROM {table} a
-            JOIN grid_cells gc
-                ON gc.tenant_id = a.tenant_id
-                AND ST_Intersects(gc.centroid, a.geom)
-            JOIN connectivity_scores cs
-                ON cs.cell_id = gc.id
-                AND cs.tenant_id = gc.tenant_id
-                AND cs.departure_time = :dep_time
-            WHERE a.tenant_id = :tid AND a.{code_col} = :code
-            GROUP BY cs.mode, cs.purpose
-            ORDER BY cs.mode, cs.purpose
-        """),
+    pb_result = db.execute(
+        f"""
+        SELECT
+            cs.mode,
+            cs.purpose,
+            AVG(cs.score_normalized)  AS avg_score,
+            CASE
+                WHEN SUM(gc.population) > 0 THEN
+                    SUM(gc.population * COALESCE(cs.score_normalized, 0))
+                    / SUM(gc.population)
+                ELSE AVG(cs.score_normalized)
+            END                       AS weighted_avg_score,
+            COUNT(*)                  AS cell_count
+        FROM {table} a
+        JOIN grid_cells gc
+            ON gc.tenant_id = a.tenant_id
+            AND ST_Intersects(gc.centroid, a.geom)
+        JOIN connectivity_scores cs
+            ON cs.cell_id = gc.id
+            AND cs.tenant_id = gc.tenant_id
+            AND cs.departure_time = $dep_time
+        WHERE a.tenant_id = $tid AND a.{code_col} = $code
+        GROUP BY cs.mode, cs.purpose
+        ORDER BY cs.mode, cs.purpose
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
     )
 
     purpose_scores: list[PurposeBreakdown] = []
-    tt_keys: list[tuple[str, str]] = []
     for row in pb_result.fetchall():
         purpose_scores.append(PurposeBreakdown(
             mode=row.mode,
@@ -584,26 +574,25 @@ async def _area_detail(
             avg_travel_time=None,
             cell_count=row.cell_count,
         ))
-        tt_keys.append((row.mode, row.purpose))
 
     # Travel times within area
-    tt_result = await db.execute(
-        text(f"""
-            SELECT
-                mt.mode,
-                mt.purpose,
-                AVG(mt.min_travel_time_minutes) AS avg_tt
-            FROM {table} a
-            JOIN grid_cells gc
-                ON gc.tenant_id = a.tenant_id
-                AND ST_Intersects(gc.centroid, a.geom)
-            JOIN min_travel_times mt
-                ON mt.cell_id = gc.id
-                AND mt.tenant_id = gc.tenant_id
-                AND mt.departure_time = :dep_time
-            WHERE a.tenant_id = :tid AND a.{code_col} = :code
-            GROUP BY mt.mode, mt.purpose
-        """),
+    tt_result = db.execute(
+        f"""
+        SELECT
+            mt.mode,
+            mt.purpose,
+            AVG(mt.min_travel_time_minutes) AS avg_tt
+        FROM {table} a
+        JOIN grid_cells gc
+            ON gc.tenant_id = a.tenant_id
+            AND ST_Intersects(gc.centroid, a.geom)
+        JOIN min_travel_times mt
+            ON mt.cell_id = gc.id
+            AND mt.tenant_id = gc.tenant_id
+            AND mt.departure_time = $dep_time
+        WHERE a.tenant_id = $tid AND a.{code_col} = $code
+        GROUP BY mt.mode, mt.purpose
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
     )
     tt_map: dict[tuple[str, str], float | None] = {}
@@ -614,41 +603,40 @@ async def _area_detail(
         ps.avg_travel_time = tt_map.get((ps.mode, ps.purpose))
 
     # Service coverage within area
-    cov_result = await db.execute(
-        text(f"""
-            SELECT
-                mt.purpose,
-                mt.mode,
-                COUNT(*)                             AS total_cells,
-                COALESCE(SUM(gc.population), 0)      AS total_population,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 15), 0)
-                                                     AS pop_15min,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 30), 0)
-                                                     AS pop_30min,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 45), 0)
-                                                     AS pop_45min,
-                COALESCE(SUM(gc.population)
-                    FILTER (WHERE mt.min_travel_time_minutes <= 60), 0)
-                                                     AS pop_60min,
-                AVG(mt.min_travel_time_minutes)      AS avg_tt,
-                PERCENTILE_CONT(0.5) WITHIN GROUP
-                    (ORDER BY mt.min_travel_time_minutes)
-                                                     AS median_tt
-            FROM {table} a
-            JOIN grid_cells gc
-                ON gc.tenant_id = a.tenant_id
-                AND ST_Intersects(gc.centroid, a.geom)
-            JOIN min_travel_times mt
-                ON mt.cell_id = gc.id
-                AND mt.tenant_id = gc.tenant_id
-                AND mt.departure_time = :dep_time
-            WHERE a.tenant_id = :tid AND a.{code_col} = :code
-            GROUP BY mt.purpose, mt.mode
-            ORDER BY mt.purpose, mt.mode
-        """),
+    cov_result = db.execute(
+        f"""
+        SELECT
+            mt.purpose,
+            mt.mode,
+            COUNT(*)                             AS total_cells,
+            COALESCE(SUM(gc.population), 0)      AS total_population,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 15), 0)
+                                                 AS pop_15min,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 30), 0)
+                                                 AS pop_30min,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 45), 0)
+                                                 AS pop_45min,
+            COALESCE(SUM(gc.population)
+                FILTER (WHERE mt.min_travel_time_minutes <= 60), 0)
+                                                 AS pop_60min,
+            AVG(mt.min_travel_time_minutes)      AS avg_tt,
+            quantile_cont(mt.min_travel_time_minutes, 0.5)
+                                                 AS median_tt
+        FROM {table} a
+        JOIN grid_cells gc
+            ON gc.tenant_id = a.tenant_id
+            AND ST_Intersects(gc.centroid, a.geom)
+        JOIN min_travel_times mt
+            ON mt.cell_id = gc.id
+            AND mt.tenant_id = gc.tenant_id
+            AND mt.departure_time = $dep_time
+        WHERE a.tenant_id = $tid AND a.{code_col} = $code
+        GROUP BY mt.purpose, mt.mode
+        ORDER BY mt.purpose, mt.mode
+        """,
         {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
     )
 
@@ -686,15 +674,15 @@ async def _area_detail(
 
 
 @router.get("/comarca/{comarca_code}", response_model=AreaDetail)
-async def get_comarca_detail(
+def get_comarca_detail(
     comarca_code: str,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> AreaDetail:
     """Full detail for a specific comarca."""
     dep_time = _validate_departure_time(departure_time)
-    return await _area_detail(
+    return _area_detail(
         table="comarcas",
         code_col="comarca_code",
         code_value=comarca_code,
@@ -705,15 +693,15 @@ async def get_comarca_detail(
 
 
 @router.get("/municipality/{muni_code}", response_model=AreaDetail)
-async def get_municipality_detail(
+def get_municipality_detail(
     muni_code: str,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> AreaDetail:
     """Full detail for a specific municipality."""
     dep_time = _validate_departure_time(departure_time)
-    return await _area_detail(
+    return _area_detail(
         table="municipalities",
         code_col="muni_code",
         code_value=muni_code,

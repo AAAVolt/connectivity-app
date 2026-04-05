@@ -1,18 +1,18 @@
 """Compute connectivity and combined scores for all grid cells.
 
-Processes travel times in batches of origin cells to avoid OOM
-when the full OD matrix is tens of millions of rows.
+Uses DuckDB as a transient query engine over Parquet files.
+Processes travel times in batches to avoid OOM.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
+from worker.db import create_engine, register_parquet
 from worker.scoring.config import ScoringConfig, load_scoring_config
 from worker.scoring.diminishing import concave_transform
 from worker.scoring.impedance import exponential_impedance
@@ -20,38 +20,63 @@ from worker.scoring.impedance import exponential_impedance
 logger = structlog.get_logger()
 
 BATCH_SIZE = 5000
-# Number of origin cells to fetch per scoring chunk (keeps memory bounded).
 CELL_CHUNK = 10_000
 
 
 def compute_scores(
-    session: Session,
     tenant_id: str,
+    serving_dir: str | Path,
+    raw_dir: str | Path | None = None,
     config: ScoringConfig | None = None,
     departure_time: str | None = None,
 ) -> dict[str, object]:
     """Compute connectivity scores for all grid cells of a tenant.
 
-    If departure_time is given (e.g. "08:00"), computes for that slot only.
-    If None, discovers all distinct departure_times in travel_times and
-    computes for each.
+    Reads travel times from Parquet (either serving_dir or raw_dir),
+    computes impedance-weighted accessibility scores, normalises,
+    and writes results as Parquet to serving_dir.
     """
     if config is None:
         config = load_scoring_config()
 
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id)
     log.info("scoring_start")
 
+    # Set up DuckDB engine with all required tables
+    conn = create_engine()
+
+    # Register travel times
+    tt_path = serving / "travel_times.parquet"
+    if raw_dir:
+        raw = Path(raw_dir)
+        if raw.is_dir() and any(raw.glob("ttm_*.parquet")):
+            register_parquet(conn, "travel_times", raw)
+        elif tt_path.exists():
+            register_parquet(conn, "travel_times", tt_path)
+    elif tt_path.exists():
+        register_parquet(conn, "travel_times", tt_path)
+    else:
+        raise FileNotFoundError(
+            f"No travel times found in {serving} or {raw_dir}"
+        )
+
+    # Register other required tables
+    register_parquet(conn, "destinations", serving / "destinations.parquet")
+    register_parquet(conn, "destination_types", serving / "destination_types.parquet")
+    register_parquet(conn, "grid_cells", serving / "grid_cells.parquet")
+
+    # Discover departure time slots
     if departure_time is not None:
         slots = [departure_time]
     else:
-        rows = session.execute(
-            text("""
-                SELECT DISTINCT departure_time
-                FROM travel_times
-                WHERE tenant_id = :tid
-                ORDER BY departure_time
-            """),
+        rows = conn.execute(
+            """
+            SELECT DISTINCT departure_time
+            FROM travel_times
+            WHERE tenant_id = $tid
+            ORDER BY departure_time
+            """,
             {"tid": tenant_id},
         ).fetchall()
         slots = [r[0] for r in rows]
@@ -64,59 +89,81 @@ def compute_scores(
     total_combined = 0
     total_min_tt = 0
 
+    all_score_dfs: list[pd.DataFrame] = []
+    all_combined_dfs: list[pd.DataFrame] = []
+    all_min_tt_dfs: list[pd.DataFrame] = []
+
     for slot in slots:
         log.info("scoring_slot_start", departure_time=slot)
-        stats = _compute_for_slot(session, tenant_id, slot, config, log)
-        total_scores += stats["scores_written"]
-        total_combined += stats["combined_written"]
-        total_min_tt += stats["min_travel_times_written"]
+        result = _compute_for_slot(conn, tenant_id, slot, config, log)
+        total_scores += len(result["scores_df"])
+        total_combined += len(result["combined_df"])
+        total_min_tt += len(result["min_tt_df"])
+        all_score_dfs.append(result["scores_df"])
+        all_combined_dfs.append(result["combined_df"])
+        all_min_tt_dfs.append(result["min_tt_df"])
 
-    session.commit()
+    conn.close()
 
-    result: dict[str, object] = {
+    # Write results as Parquet
+    if all_score_dfs:
+        scores_df = pd.concat(all_score_dfs, ignore_index=True)
+        scores_df.to_parquet(serving / "connectivity_scores.parquet", index=False)
+
+    if all_combined_dfs:
+        combined_df = pd.concat(all_combined_dfs, ignore_index=True)
+        combined_df.to_parquet(serving / "combined_scores.parquet", index=False)
+
+    if all_min_tt_dfs:
+        min_tt_df = pd.concat(all_min_tt_dfs, ignore_index=True)
+        min_tt_df.to_parquet(serving / "min_travel_times.parquet", index=False)
+
+    result_stats: dict[str, object] = {
         "scores_written": total_scores,
         "combined_written": total_combined,
         "min_travel_times_written": total_min_tt,
         "departure_times": slots,
     }
-    log.info("scoring_complete", **result)
-    return result
+    log.info("scoring_complete", **result_stats)
+    return result_stats
 
 
 def _compute_for_slot(
-    session: Session,
+    conn: object,
     tenant_id: str,
     departure_time: str,
     config: ScoringConfig,
     log: structlog.stdlib.BoundLogger,
-) -> dict[str, int]:
-    """Compute scores for a single departure_time slot.
+) -> dict[str, pd.DataFrame]:
+    """Compute scores for a single departure_time slot."""
 
-    Fetches travel times in chunks of CELL_CHUNK origin cells to keep
-    memory usage bounded, then aggregates and normalises across all cells.
-    """
-
-    # ── 0. Discover distinct origin cells for this slot ──
+    # Discover origin cells for this slot
     cell_ids = [
         r[0]
-        for r in session.execute(
-            text("""
-                SELECT DISTINCT origin_cell_id
-                FROM travel_times
-                WHERE tenant_id = :tid AND departure_time = :dep_time
-                ORDER BY origin_cell_id
-            """),
+        for r in conn.execute(
+            """
+            SELECT DISTINCT origin_cell_id
+            FROM travel_times
+            WHERE tenant_id = $tid AND departure_time = $dep_time
+            ORDER BY origin_cell_id
+            """,
             {"tid": tenant_id, "dep_time": departure_time},
         ).fetchall()
     ]
 
+    empty = {
+        "scores_df": pd.DataFrame(),
+        "combined_df": pd.DataFrame(),
+        "min_tt_df": pd.DataFrame(),
+    }
+
     if not cell_ids:
         log.warning("no_travel_times_found", departure_time=departure_time)
-        return {"scores_written": 0, "combined_written": 0, "min_travel_times_written": 0}
+        return empty
 
     log.info("scoring_cells_found", count=len(cell_ids))
 
-    # ── 1. Fetch travel times in chunks and compute per-cell raw scores ──
+    # Fetch travel times in chunks
     all_scores: list[pd.DataFrame] = []
     all_min_tt: list[pd.DataFrame] = []
 
@@ -124,28 +171,30 @@ def _compute_for_slot(
         chunk_ids = cell_ids[i : i + CELL_CHUNK]
         log.info("scoring_chunk", offset=i, size=len(chunk_ids))
 
-        # Fetch with weights
-        rows = session.execute(
-            text("""
-                SELECT
-                    tt.origin_cell_id,
-                    tt.mode,
-                    dt.code AS dest_type,
-                    tt.travel_time_minutes,
-                    d.weight
-                FROM travel_times tt
-                JOIN destinations d ON tt.destination_id = d.id
-                JOIN destination_types dt ON d.type_id = dt.id
-                WHERE tt.tenant_id = :tid
-                  AND tt.departure_time = :dep_time
-                  AND tt.travel_time_minutes <= :max_tt
-                  AND tt.origin_cell_id = ANY(:cell_ids)
-            """),
+        # Create temp table for chunk IDs
+        conn.execute("CREATE OR REPLACE TEMP TABLE chunk_ids AS SELECT UNNEST($ids) AS id",
+                      {"ids": chunk_ids})
+
+        rows = conn.execute(
+            """
+            SELECT
+                tt.origin_cell_id,
+                tt.mode,
+                dt.code AS dest_type,
+                tt.travel_time_minutes,
+                d.weight
+            FROM travel_times tt
+            JOIN destinations d ON tt.destination_id = d.id
+            JOIN destination_types dt ON d.type_id = dt.id
+            JOIN chunk_ids ci ON tt.origin_cell_id = ci.id
+            WHERE tt.tenant_id = $tid
+              AND tt.departure_time = $dep_time
+              AND tt.travel_time_minutes <= $max_tt
+            """,
             {
                 "tid": tenant_id,
                 "dep_time": departure_time,
                 "max_tt": config.max_travel_time,
-                "cell_ids": chunk_ids,
             },
         ).fetchall()
 
@@ -156,7 +205,7 @@ def _compute_for_slot(
             rows, columns=["cell_id", "mode", "dest_type", "travel_time", "weight"]
         )
 
-        # Map destination type → purpose
+        # Map destination type -> purpose
         df["purpose"] = df["dest_type"].map(config.purpose_map)
         df = df.dropna(subset=["purpose"])
         if df.empty:
@@ -183,28 +232,27 @@ def _compute_for_slot(
         )
         all_scores.append(grouped)
 
-        # Min travel times (with destination_id)
-        rows_full = session.execute(
-            text("""
-                SELECT
-                    tt.origin_cell_id,
-                    tt.mode,
-                    dt.code AS dest_type,
-                    tt.travel_time_minutes,
-                    tt.destination_id
-                FROM travel_times tt
-                JOIN destinations d ON tt.destination_id = d.id
-                JOIN destination_types dt ON d.type_id = dt.id
-                WHERE tt.tenant_id = :tid
-                  AND tt.departure_time = :dep_time
-                  AND tt.travel_time_minutes <= :max_tt
-                  AND tt.origin_cell_id = ANY(:cell_ids)
-            """),
+        # Min travel times
+        rows_full = conn.execute(
+            """
+            SELECT
+                tt.origin_cell_id,
+                tt.mode,
+                dt.code AS dest_type,
+                tt.travel_time_minutes,
+                tt.destination_id
+            FROM travel_times tt
+            JOIN destinations d ON tt.destination_id = d.id
+            JOIN destination_types dt ON d.type_id = dt.id
+            JOIN chunk_ids ci ON tt.origin_cell_id = ci.id
+            WHERE tt.tenant_id = $tid
+              AND tt.departure_time = $dep_time
+              AND tt.travel_time_minutes <= $max_tt
+            """,
             {
                 "tid": tenant_id,
                 "dep_time": departure_time,
                 "max_tt": config.max_travel_time,
-                "cell_ids": chunk_ids,
             },
         ).fetchall()
 
@@ -226,101 +274,44 @@ def _compute_for_slot(
 
     if not all_scores:
         log.warning("no_mapped_purposes", departure_time=departure_time)
-        return {"scores_written": 0, "combined_written": 0, "min_travel_times_written": 0}
+        return empty
 
-    # ── 2. Concatenate all chunks ──
+    # Concatenate chunks
     grouped = pd.concat(all_scores, ignore_index=True)
     min_tt_all = pd.concat(all_min_tt, ignore_index=True) if all_min_tt else pd.DataFrame()
 
-    # ── 3. Normalise per (mode, purpose) to [0, 100] ──
+    # Normalise per (mode, purpose) to [0, 100]
     def _normalize(group: pd.DataFrame) -> pd.DataFrame:
         mn, mx = group["score"].min(), group["score"].max()
         out = group.copy()
-        if mx == mn:
-            out["score_normalized"] = 0.0
-        else:
-            out["score_normalized"] = (out["score"] - mn) / (mx - mn) * 100.0
+        out["score_normalized"] = (
+            0.0 if mx == mn else (out["score"] - mn) / (mx - mn) * 100.0
+        )
         return out
 
     grouped = grouped.groupby(
         ["mode", "purpose"], group_keys=False
     ).apply(_normalize)
 
-    # ── 4. Write connectivity_scores ──
-    session.execute(
-        text(
-            "DELETE FROM connectivity_scores "
-            "WHERE tenant_id = :tid AND departure_time = :dep_time"
-        ),
-        {"tid": tenant_id, "dep_time": departure_time},
-    )
+    # Build connectivity_scores DataFrame
+    scores_df = grouped[["cell_id", "mode", "purpose", "score", "score_normalized"]].copy()
+    scores_df["tenant_id"] = tenant_id
+    scores_df["departure_time"] = departure_time
+    scores_df["id"] = range(1, len(scores_df) + 1)
 
-    records = grouped.to_dict("records")
-    for i in range(0, len(records), BATCH_SIZE):
-        batch = [
-            {
-                "tenant_id": tenant_id,
-                "cell_id": int(r["cell_id"]),
-                "mode": r["mode"],
-                "purpose": r["purpose"],
-                "score": float(r["score"]),
-                "score_normalized": float(r["score_normalized"]),
-                "departure_time": departure_time,
-            }
-            for r in records[i : i + BATCH_SIZE]
-        ]
-        session.execute(
-            text("""
-                INSERT INTO connectivity_scores
-                    (tenant_id, cell_id, mode, purpose, score,
-                     score_normalized, departure_time)
-                VALUES
-                    (:tenant_id, :cell_id, :mode, :purpose, :score,
-                     :score_normalized, :departure_time)
-            """),
-            batch,
-        )
-
-    # ── 4b. Write min travel times ──
-    session.execute(
-        text(
-            "DELETE FROM min_travel_times "
-            "WHERE tenant_id = :tid AND departure_time = :dep_time"
-        ),
-        {"tid": tenant_id, "dep_time": departure_time},
-    )
-
+    # Build min_travel_times DataFrame
     if not min_tt_all.empty:
-        min_records = min_tt_all.to_dict("records")
-        for i in range(0, len(min_records), BATCH_SIZE):
-            batch = [
-                {
-                    "tenant_id": tenant_id,
-                    "cell_id": int(r["cell_id"]),
-                    "mode": r["mode"],
-                    "purpose": r["purpose"],
-                    "min_tt": float(r["travel_time"]),
-                    "dest_id": int(r["destination_id"]),
-                    "departure_time": departure_time,
-                }
-                for r in min_records[i : i + BATCH_SIZE]
-            ]
-            session.execute(
-                text("""
-                    INSERT INTO min_travel_times
-                        (tenant_id, cell_id, mode, purpose,
-                         min_travel_time_minutes, nearest_destination_id,
-                         departure_time)
-                    VALUES
-                        (:tenant_id, :cell_id, :mode, :purpose,
-                         :min_tt, :dest_id, :departure_time)
-                """),
-                batch,
-            )
+        min_tt_df = min_tt_all.rename(columns={
+            "travel_time": "min_travel_time_minutes",
+            "destination_id": "nearest_destination_id",
+        })
+        min_tt_df["tenant_id"] = tenant_id
+        min_tt_df["departure_time"] = departure_time
+        min_tt_df["id"] = range(1, len(min_tt_df) + 1)
     else:
-        min_records = []
+        min_tt_df = pd.DataFrame()
 
-    # ── 5. Combined scores ──
+    # Combined scores
     weights_rows = []
     for mode, purposes in config.combined_weights.items():
         for purpose, w in purposes.items():
@@ -334,58 +325,26 @@ def _compute_for_slot(
     combined.columns = ["cell_id", "combined_score"]
 
     c_min, c_max = combined["combined_score"].min(), combined["combined_score"].max()
-    if c_max == c_min:
-        combined["combined_score_normalized"] = 0.0
-    else:
-        combined["combined_score_normalized"] = (
-            (combined["combined_score"] - c_min) / (c_max - c_min) * 100.0
-        )
-
-    session.execute(
-        text(
-            "DELETE FROM combined_scores "
-            "WHERE tenant_id = :tid AND departure_time = :dep_time"
-        ),
-        {"tid": tenant_id, "dep_time": departure_time},
+    combined["combined_score_normalized"] = (
+        0.0 if c_max == c_min
+        else (combined["combined_score"] - c_min) / (c_max - c_min) * 100.0
     )
 
-    weights_json = json.dumps(config.combined_weights)
-    c_records = combined.to_dict("records")
-    for i in range(0, len(c_records), BATCH_SIZE):
-        batch = [
-            {
-                "tenant_id": tenant_id,
-                "cell_id": int(r["cell_id"]),
-                "combined_score": float(r["combined_score"]),
-                "combined_score_normalized": float(r["combined_score_normalized"]),
-                "weights": weights_json,
-                "departure_time": departure_time,
-            }
-            for r in c_records[i : i + BATCH_SIZE]
-        ]
-        session.execute(
-            text("""
-                INSERT INTO combined_scores
-                    (tenant_id, cell_id, combined_score,
-                     combined_score_normalized, weights, departure_time)
-                VALUES
-                    (:tenant_id, :cell_id, :combined_score,
-                     :combined_score_normalized, CAST(:weights AS jsonb),
-                     :departure_time)
-            """),
-            batch,
-        )
+    combined["tenant_id"] = tenant_id
+    combined["departure_time"] = departure_time
+    combined["weights"] = json.dumps(config.combined_weights)
+    combined["id"] = range(1, len(combined) + 1)
 
     log.info(
         "scoring_slot_complete",
         departure_time=departure_time,
-        scores=len(records),
-        combined=len(c_records),
-        min_tt=len(min_records),
+        scores=len(scores_df),
+        combined=len(combined),
+        min_tt=len(min_tt_df),
     )
 
     return {
-        "scores_written": len(records),
-        "combined_written": len(c_records),
-        "min_travel_times_written": len(min_records),
+        "scores_df": scores_df,
+        "combined_df": combined,
+        "min_tt_df": min_tt_df,
     }

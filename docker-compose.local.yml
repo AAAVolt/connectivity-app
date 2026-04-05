@@ -1,37 +1,20 @@
+# Bizkaia Connectivity – local development (DuckDB, no PostGIS)
 services:
-  db:
-    image: postgis/postgis:16-3.4
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-bizkaia}
-      POSTGRES_USER: ${POSTGRES_USER:-bizkaia}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bizkaia_local}
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bizkaia}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   backend:
     build:
       context: .
       dockerfile: docker/backend.Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-bizkaia}:${POSTGRES_PASSWORD:-bizkaia_local}@db:5432/${POSTGRES_DB:-bizkaia}
+      DATA_SOURCE: local
+      DATA_DIR: /data/serving
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       ENVIRONMENT: local
       PYTHONPATH: /app/src
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - ./backend:/app
+      - ./data:/data
     command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   worker:
@@ -39,12 +22,10 @@ services:
       context: .
       dockerfile: docker/worker.Dockerfile
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-bizkaia}:${POSTGRES_PASSWORD:-bizkaia_local}@db:5432/${POSTGRES_DB:-bizkaia}
+      DATA_DIR: /data
+      SERVING_DIR: /data/serving
       ENVIRONMENT: local
       PYTHONPATH: /app/src
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - ./worker:/app
       - ./data:/data
@@ -75,6 +56,3 @@ services:
       - ./frontend:/app
       - /app/node_modules
     command: ["pnpm", "dev", "--hostname", "0.0.0.0"]
-
-volumes:
-  pgdata:

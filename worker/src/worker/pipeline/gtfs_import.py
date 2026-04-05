@@ -1,7 +1,9 @@
-"""Import route shapes and stops from downloaded GTFS feeds into the database.
+"""Import route shapes and stops from downloaded GTFS feeds.
 
 Reads the .gtfs.zip files from the data directory, extracts shapes.txt,
-routes.txt, trips.txt, and stops.txt, and writes them as PostGIS geometries.
+routes.txt, trips.txt, and stops.txt, and writes them as GeoParquet.
+
+Output: gtfs_routes.parquet + gtfs_stops.parquet in the serving directory.
 """
 
 from __future__ import annotations
@@ -11,10 +13,13 @@ import io
 import zipfile
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
+import geopandas as gpd
+import pandas as pd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from shapely.geometry import MultiLineString, Point
+from shapely import wkt as shapely_wkt
 
 logger = structlog.get_logger()
 
@@ -32,13 +37,15 @@ ROUTE_TYPE_LABELS = {
 
 
 def import_gtfs_to_db(
-    session: Session,
+    serving_dir: str | Path,
     gtfs_dir: Path,
 ) -> dict[str, dict[str, int]]:
     """Import routes and stops from all GTFS feeds in the directory.
 
+    Writes gtfs_routes.parquet and gtfs_stops.parquet as GeoParquet.
     Returns dict of operator -> {routes: N, stops: N}.
     """
+    serving = Path(serving_dir)
     log = logger.bind(gtfs_dir=str(gtfs_dir))
     log.info("gtfs_import_start")
 
@@ -46,9 +53,10 @@ def import_gtfs_to_db(
     if not zip_files:
         raise FileNotFoundError(f"No .gtfs.zip files found in {gtfs_dir}")
 
-    # Clear existing
-    session.execute(text("DELETE FROM gtfs_routes"))
-    session.execute(text("DELETE FROM gtfs_stops"))
+    all_route_records: list[dict[str, Any]] = []
+    all_route_geoms: list[MultiLineString] = []
+    all_stop_records: list[dict[str, Any]] = []
+    all_stop_geoms: list[Point] = []
 
     results: dict[str, dict[str, int]] = {}
 
@@ -58,29 +66,54 @@ def import_gtfs_to_db(
         log_op.info("gtfs_import_operator_start")
 
         try:
-            routes_count = _import_routes(session, zip_path, operator)
-            stops_count = _import_stops(session, zip_path, operator)
-            results[operator] = {"routes": routes_count, "stops": stops_count}
-            log_op.info("gtfs_import_operator_complete", routes=routes_count, stops=stops_count)
+            route_recs, route_geoms = _extract_routes(zip_path, operator)
+            stop_recs, stop_geoms = _extract_stops(zip_path, operator)
+
+            all_route_records.extend(route_recs)
+            all_route_geoms.extend(route_geoms)
+            all_stop_records.extend(stop_recs)
+            all_stop_geoms.extend(stop_geoms)
+
+            results[operator] = {"routes": len(route_recs), "stops": len(stop_recs)}
+            log_op.info("gtfs_import_operator_complete", routes=len(route_recs), stops=len(stop_recs))
         except Exception as exc:
             log_op.warning("gtfs_import_operator_failed", error=str(exc))
             results[operator] = {"routes": 0, "stops": 0, "error": str(exc)}  # type: ignore[dict-item]
 
-    session.commit()
+    # Write GeoParquet files
+    if all_route_records:
+        routes_gdf = gpd.GeoDataFrame(
+            all_route_records, geometry=all_route_geoms, crs="EPSG:4326"
+        )
+        out_path = serving / "gtfs_routes.parquet"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        routes_gdf.to_parquet(out_path)
+
+    if all_stop_records:
+        stops_gdf = gpd.GeoDataFrame(
+            all_stop_records, geometry=all_stop_geoms, crs="EPSG:4326"
+        )
+        out_path = serving / "gtfs_stops.parquet"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        stops_gdf.to_parquet(out_path)
+
     log.info("gtfs_import_complete", operators=len(results))
     return results
 
 
-def _import_stops(session: Session, zip_path: Path, operator: str) -> int:
-    """Extract and import stops from a GTFS zip."""
+def _extract_stops(
+    zip_path: Path, operator: str
+) -> tuple[list[dict[str, Any]], list[Point]]:
+    """Extract stops from a GTFS zip. Returns (records, geometries)."""
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
+
     with zipfile.ZipFile(zip_path) as zf:
         if "stops.txt" not in zf.namelist():
-            return 0
+            return records, geometries
 
         with zf.open("stops.txt") as f:
             reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
-            batch: list[dict[str, object]] = []
-            count = 0
 
             for row in reader:
                 try:
@@ -89,43 +122,27 @@ def _import_stops(session: Session, zip_path: Path, operator: str) -> int:
                 except (ValueError, KeyError):
                     continue
 
-                batch.append({
+                records.append({
                     "operator": operator,
                     "stop_id": row.get("stop_id", ""),
                     "stop_name": row.get("stop_name", ""),
-                    "lon": lon,
-                    "lat": lat,
                 })
-                count += 1
+                geometries.append(Point(lon, lat))
 
-                if len(batch) >= 1000:
-                    _insert_stops_batch(session, batch)
-                    batch = []
-
-            if batch:
-                _insert_stops_batch(session, batch)
-
-    return count
+    return records, geometries
 
 
-def _insert_stops_batch(session: Session, batch: list[dict[str, object]]) -> None:
-    session.execute(
-        text("""
-            INSERT INTO gtfs_stops (operator, stop_id, stop_name, geom)
-            VALUES (:operator, :stop_id, :stop_name,
-                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
-            ON CONFLICT (operator, stop_id) DO NOTHING
-        """),
-        batch,
-    )
-
-
-def _import_routes(session: Session, zip_path: Path, operator: str) -> int:
-    """Extract and import route shapes from a GTFS zip.
+def _extract_routes(
+    zip_path: Path, operator: str
+) -> tuple[list[dict[str, Any]], list[MultiLineString]]:
+    """Extract route shapes from a GTFS zip. Returns (records, geometries).
 
     Builds LineStrings from shapes.txt, links them to routes via trips.txt,
-    and stores one MultiLineString per route.
+    and produces one MultiLineString per route.
     """
+    records: list[dict[str, Any]] = []
+    geometries: list[MultiLineString] = []
+
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
 
@@ -140,7 +157,7 @@ def _import_routes(session: Session, zip_path: Path, operator: str) -> int:
                         "color": row.get("route_color", ""),
                     }
 
-        # Read trips.txt to map shape_id → route_id
+        # Read trips.txt to map shape_id -> route_id
         shape_to_route: dict[str, str] = {}
         if "trips.txt" in names:
             with zf.open("trips.txt") as f:
@@ -152,8 +169,7 @@ def _import_routes(session: Session, zip_path: Path, operator: str) -> int:
 
         # Read shapes.txt and group points by shape_id
         if "shapes.txt" not in names:
-            # No shapes — try to build routes from stop sequences instead
-            return 0
+            return records, geometries
 
         shape_points: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
         with zf.open("shapes.txt") as f:
@@ -167,7 +183,7 @@ def _import_routes(session: Session, zip_path: Path, operator: str) -> int:
                 except (ValueError, KeyError):
                     continue
 
-        # Group shapes by route_id and build WKT MultiLineStrings
+        # Group shapes by route_id and build MultiLineStrings
         route_shapes: dict[str, list[list[tuple[float, float]]]] = defaultdict(list)
         for shape_id, points in shape_points.items():
             route_id = shape_to_route.get(shape_id, shape_id)
@@ -178,47 +194,31 @@ def _import_routes(session: Session, zip_path: Path, operator: str) -> int:
                 route_shapes[route_id].append(coords)
 
         # Deduplicate shapes per route (keep unique ones only)
-        count = 0
         for route_id, line_lists in route_shapes.items():
-            # Build a single representative line per route (first shape)
-            # to avoid massive geometries
             info = routes_info.get(route_id, {})
-            wkt_lines = []
+            unique_lines: list[list[tuple[float, float]]] = []
             seen_signatures: set[tuple[float, ...]] = set()
+
             for coords in line_lists:
                 # Simple dedup: use first and last points as signature
                 sig = (coords[0][0], coords[0][1], coords[-1][0], coords[-1][1])
                 if sig in seen_signatures:
                     continue
                 seen_signatures.add(sig)
-                wkt_coords = ",".join(f"{lon} {lat}" for lon, lat in coords)
-                wkt_lines.append(f"({wkt_coords})")
+                unique_lines.append(coords)
 
-            if not wkt_lines:
+            if not unique_lines:
                 continue
 
-            wkt = f"MULTILINESTRING({','.join(wkt_lines)})"
+            multi_line = MultiLineString(unique_lines)
 
-            session.execute(
-                text("""
-                    INSERT INTO gtfs_routes (operator, route_id, route_name, route_type, route_color, geom)
-                    VALUES (:operator, :route_id, :route_name, :route_type, :route_color,
-                            ST_SetSRID(ST_GeomFromText(:wkt), 4326))
-                    ON CONFLICT (operator, route_id) DO UPDATE
-                    SET route_name = EXCLUDED.route_name,
-                        route_type = EXCLUDED.route_type,
-                        route_color = EXCLUDED.route_color,
-                        geom = EXCLUDED.geom
-                """),
-                {
-                    "operator": operator,
-                    "route_id": route_id,
-                    "route_name": info.get("name", ""),
-                    "route_type": int(info.get("type", "3")),
-                    "route_color": info.get("color", ""),
-                    "wkt": wkt,
-                },
-            )
-            count += 1
+            records.append({
+                "operator": operator,
+                "route_id": route_id,
+                "route_name": info.get("name", ""),
+                "route_type": int(info.get("type", "3")),
+                "route_color": info.get("color", ""),
+            })
+            geometries.append(multi_line)
 
-    return count
+    return records, geometries

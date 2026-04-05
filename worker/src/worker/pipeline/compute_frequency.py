@@ -2,7 +2,9 @@
 
 Reads stop_times.txt, trips.txt, and calendar.txt from each GTFS zip,
 filters to a representative weekday, counts departures per stop in
-configurable time windows, and writes results to the stop_frequency table.
+configurable time windows, and writes results to stop_frequency.parquet.
+
+Output: stop_frequency.parquet (GeoParquet) in the serving directory.
 """
 
 from __future__ import annotations
@@ -12,10 +14,11 @@ import io
 import zipfile
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
+import geopandas as gpd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from shapely.geometry import Point
 
 logger = structlog.get_logger()
 
@@ -79,28 +82,31 @@ def _compute_for_feed(
     zf: zipfile.ZipFile,
     operator: str,
     windows: list[tuple[str, int, int, float]],
-) -> list[dict[str, object]]:
-    """Compute departures per hour per stop for one GTFS feed."""
+) -> tuple[list[dict[str, Any]], list[Point]]:
+    """Compute departures per hour per stop for one GTFS feed.
+
+    Returns (records, geometries) for building a GeoDataFrame.
+    """
     log = logger.bind(operator=operator)
     names = zf.namelist()
 
     if "stop_times.txt" not in names or "trips.txt" not in names:
         log.warning("frequency_missing_files", available=names)
-        return []
+        return [], []
 
     # 1. Get weekday services
     weekday_services = _get_weekday_service_ids(zf)
     accept_all = len(weekday_services) == 0
     log.info("frequency_services", weekday_services=len(weekday_services), accept_all=accept_all)
 
-    # 2. Read trips.txt → map trip_id → service_id
+    # 2. Read trips.txt -> map trip_id -> service_id
     trip_service: dict[str, str] = {}
     with zf.open("trips.txt") as f:
         reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
         for row in reader:
             trip_service[row["trip_id"]] = row.get("service_id", "")
 
-    # 3. Read stops.txt → get stop names and coords
+    # 3. Read stops.txt -> get stop names and coords
     stop_info: dict[str, dict[str, str | float]] = {}
     if "stops.txt" in names:
         with zf.open("stops.txt") as f:
@@ -152,42 +158,51 @@ def _compute_for_feed(
     log.info("frequency_processed", processed=processed, skipped=skipped)
 
     # 5. Build output records
-    results: list[dict[str, object]] = []
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
+
     for stop_id, window_data in stop_window_trips.items():
         info = stop_info.get(stop_id, {})
+        lon = info.get("lon")
+        lat = info.get("lat")
+
+        if lon is None or lat is None:
+            continue
 
         for window_label, start_min, end_min, hours in windows:
             trips = window_data.get(window_label, set())
             departures = len(trips)
             dph = departures / hours if hours > 0 else 0
 
-            results.append({
+            records.append({
                 "operator": operator,
                 "stop_id": stop_id,
                 "stop_name": info.get("name", ""),
-                "lon": info.get("lon"),
-                "lat": info.get("lat"),
                 "time_window": window_label,
                 "departures": departures,
                 "departures_per_hour": round(dph, 2),
             })
+            geometries.append(Point(float(lon), float(lat)))
 
-    return results
+    return records, geometries
 
 
 def compute_transit_frequency(
-    session: Session,
+    serving_dir: str | Path,
     gtfs_dir: Path,
     *,
     windows: list[tuple[str, int, int, float]] | None = None,
 ) -> dict[str, object]:
     """Compute and store transit frequency for all GTFS feeds.
 
+    Writes stop_frequency.parquet as GeoParquet.
+
     Args:
-        session: Database session.
+        serving_dir: Output directory for Parquet files.
         gtfs_dir: Directory containing .gtfs.zip files.
         windows: List of (label, start_minutes, end_minutes, hours) tuples.
     """
+    serving = Path(serving_dir)
     log = logger.bind(gtfs_dir=str(gtfs_dir))
     log.info("frequency_compute_start")
 
@@ -201,10 +216,8 @@ def compute_transit_frequency(
     if not zip_files:
         raise FileNotFoundError(f"No .gtfs.zip files in {gtfs_dir}")
 
-    # Clear existing
-    session.execute(text("DELETE FROM stop_frequency"))
-
-    total_inserted = 0
+    all_records: list[dict[str, Any]] = []
+    all_geoms: list[Point] = []
     operator_counts: dict[str, int] = {}
 
     for zip_path in zip_files:
@@ -214,22 +227,10 @@ def compute_transit_frequency(
 
         try:
             with zipfile.ZipFile(zip_path) as zf:
-                records = _compute_for_feed(zf, operator, windows)
+                records, geoms = _compute_for_feed(zf, operator, windows)
 
-            # Batch insert
-            batch: list[dict[str, object]] = []
-            for rec in records:
-                if rec.get("lon") is not None and rec.get("lat") is not None:
-                    batch.append(rec)
-
-                if len(batch) >= 1000:
-                    _insert_batch(session, batch)
-                    total_inserted += len(batch)
-                    batch = []
-
-            if batch:
-                _insert_batch(session, batch)
-                total_inserted += len(batch)
+            all_records.extend(records)
+            all_geoms.extend(geoms)
 
             operator_counts[operator] = len(records)
             log_op.info("frequency_operator_done", records=len(records))
@@ -238,30 +239,17 @@ def compute_transit_frequency(
             log_op.warning("frequency_operator_failed", error=str(exc))
             operator_counts[operator] = 0
 
-    session.commit()
+    # Write GeoParquet
+    total_inserted = len(all_records)
+    if all_records:
+        gdf = gpd.GeoDataFrame(all_records, geometry=all_geoms, crs="EPSG:4326")
+        out_path = serving / "stop_frequency.parquet"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        gdf.to_parquet(out_path)
+
     log.info("frequency_compute_done", total=total_inserted, operators=len(operator_counts))
 
     return {
         "total_records": total_inserted,
         "operators": operator_counts,
     }
-
-
-def _insert_batch(session: Session, batch: list[dict[str, object]]) -> None:
-    session.execute(
-        text("""
-            INSERT INTO stop_frequency
-                (operator, stop_id, stop_name, time_window, departures, departures_per_hour, geom)
-            VALUES (
-                :operator, :stop_id, :stop_name, :time_window,
-                :departures, :departures_per_hour,
-                ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
-            )
-            ON CONFLICT (operator, stop_id, time_window) DO UPDATE SET
-                stop_name = EXCLUDED.stop_name,
-                departures = EXCLUDED.departures,
-                departures_per_hour = EXCLUDED.departures_per_hour,
-                geom = EXCLUDED.geom
-        """),
-        batch,
-    )

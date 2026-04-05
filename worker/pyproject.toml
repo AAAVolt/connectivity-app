@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "bizkaia-worker"
-version = "0.1.0"
-description = "Bizkaia Connectivity MVP – Data Pipeline Worker"
+version = "0.2.0"
+description = "Bizkaia Connectivity MVP – Data Pipeline Worker (DuckDB/Parquet)"
 authors = ["Bizkaia Connectivity Team"]
 packages = [{include = "worker", from = "src"}]
 
@@ -9,9 +9,7 @@ packages = [{include = "worker", from = "src"}]
 python = "^3.11"
 typer = "^0.12"
 click = ">=8.0,<8.2"
-sqlalchemy = "^2.0"
-psycopg2-binary = "^2.9"
-geoalchemy2 = "^0.15.0"
+duckdb = "^1.1"
 geopandas = "^0.14"
 shapely = "^2.0"
 pandas = "^2.2"
@@ -21,6 +19,10 @@ structlog = "^24.1"
 pyyaml = "^6.0"
 httpx = "^0.27"
 pyarrow = "^17.0"
+google-cloud-storage = {version = "^2.18", optional = true}
+
+[tool.poetry.extras]
+gcs = ["google-cloud-storage"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

@@ -1,5 +1,6 @@
 """Bizkaia Connectivity MVP – FastAPI backend."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,23 +15,33 @@ from backend.api.health import router as health_router
 from backend.api.stats import router as stats_router
 from backend.api.sociodemographic import router as sociodemographic_router
 from backend.api.transit import router as transit_router
+from backend.config import get_settings
+from backend.db import init_db, reload_db
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    logger.info("Loading DuckDB from %s (%s)", settings.data_dir, settings.data_source)
+    init_db(settings)
     yield
 
 
 def create_app() -> FastAPI:
     application = FastAPI(
         title="Bizkaia Connectivity API",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000"],
+        allow_origins=[
+            "http://localhost:3000",
+            "https://*.run.app",       # Cloud Run frontend
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -44,6 +55,12 @@ def create_app() -> FastAPI:
     application.include_router(sociodemographic_router)
     application.include_router(stats_router)
     application.include_router(transit_router)
+
+    # Admin endpoint to hot-reload data from GCS
+    @application.post("/admin/reload", tags=["admin"])
+    def admin_reload() -> dict[str, str]:
+        reload_db()
+        return {"status": "reloaded"}
 
     return application
 

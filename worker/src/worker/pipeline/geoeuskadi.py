@@ -2,17 +2,21 @@
 
 All endpoints are public, no authentication required.
 Geometries are requested in EPSG:4326 (WGS84) for direct storage.
+
+Output: GeoParquet files in the serving directory.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
+import geopandas as gpd
 import httpx
+import pandas as pd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from shapely.geometry import MultiLineString, MultiPolygon, Point, Polygon, shape
 
 logger = structlog.get_logger()
 
@@ -45,6 +49,25 @@ COMARCAS_URL = f"{GEOEUSKADI_BASE}/U11/LIMITES_CAS/MapServer/9/query"
 # Default request timeout
 TIMEOUT_S = 60
 MAX_RECORD_COUNT = 2000
+
+# Destination type definitions (from 002_seed_demo.sql)
+DESTINATION_TYPES = [
+    {"code": "aeropuerto", "label": "Aeropuerto", "description": "Airports"},
+    {"code": "bachiller", "label": "Bachiller", "description": "Secondary / vocational schools (BHI)"},
+    {"code": "centro_educativo", "label": "Centro Educativo", "description": "Education centres"},
+    {"code": "centro_urbano", "label": "Centro Urbano", "description": "Urban centres"},
+    {"code": "consulta_general", "label": "Consulta General", "description": "GP / general health consultations"},
+    {"code": "hacienda", "label": "Hacienda", "description": "Government tax / finance offices"},
+    {"code": "hospital", "label": "Hospital", "description": "Hospitals"},
+    {"code": "osakidetza", "label": "Osakidetza", "description": "Osakidetza health service locations"},
+    {"code": "residencia", "label": "Residencia", "description": "Residential care facilities"},
+    {"code": "universidad", "label": "Universidad", "description": "Universities"},
+    # Legacy types kept for backward compatibility
+    {"code": "school_primary", "label": "School Primary", "description": "Primary schools"},
+    {"code": "health_gp", "label": "Health GP", "description": "GPs / health centres / pharmacies"},
+    {"code": "supermarket", "label": "Supermarket", "description": "Supermarkets"},
+    {"code": "jobs", "label": "Jobs", "description": "Employment zones"},
+]
 
 
 def _query_arcgis(
@@ -91,15 +114,86 @@ def _query_all_features(
     return all_features
 
 
+def _ensure_multi(geom: Any) -> MultiPolygon:
+    """Promote Polygon to MultiPolygon for schema consistency."""
+    if geom is None:
+        return MultiPolygon()
+    if isinstance(geom, Polygon):
+        return MultiPolygon([geom])
+    if isinstance(geom, MultiPolygon):
+        return geom
+    # GeometryCollection — extract polygon parts
+    polys: list[Polygon] = []
+    for g in getattr(geom, "geoms", []):
+        if isinstance(g, Polygon):
+            polys.append(g)
+        elif isinstance(g, MultiPolygon):
+            polys.extend(g.geoms)
+    return MultiPolygon(polys) if polys else MultiPolygon()
+
+
+def _write_geoparquet(gdf: gpd.GeoDataFrame, path: Path) -> None:
+    """Write a GeoDataFrame to GeoParquet, creating parent dirs as needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    gdf.to_parquet(path)
+
+
+def _write_parquet(df: pd.DataFrame, path: Path) -> None:
+    """Write a DataFrame to Parquet, creating parent dirs as needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, index=False)
+
+
+# ── Seed data helpers ──
+
+
+def seed_tenants_and_modes(serving_dir: str | Path) -> None:
+    """Write tenants.parquet and modes.parquet with default demo data."""
+    serving = Path(serving_dir)
+    log = logger.bind(serving_dir=str(serving))
+
+    # Tenants
+    tenants_df = pd.DataFrame([{
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Bizkaia Demo",
+        "slug": "bizkaia-demo",
+        "config": '{"region": "bizkaia", "crs_projected": 25830}',
+    }])
+    _write_parquet(tenants_df, serving / "tenants.parquet")
+    log.info("tenants_written", count=len(tenants_df))
+
+    # Modes
+    modes_df = pd.DataFrame([
+        {"id": 1, "code": "TRANSIT", "label": "Public Transport"},
+    ])
+    _write_parquet(modes_df, serving / "modes.parquet")
+    log.info("modes_written", count=len(modes_df))
+
+    # Destination types
+    dest_types_df = pd.DataFrame(DESTINATION_TYPES)
+    dest_types_df.insert(0, "id", range(1, len(dest_types_df) + 1))
+    _write_parquet(dest_types_df, serving / "destination_types.parquet")
+    log.info("destination_types_written", count=len(dest_types_df))
+
+
+def _dest_type_id(code: str) -> int:
+    """Look up a destination_type id by code from the static list."""
+    for i, dt in enumerate(DESTINATION_TYPES, start=1):
+        if dt["code"] == code:
+            return i
+    raise ValueError(f"Destination type '{code}' not found in DESTINATION_TYPES")
+
+
 # ── Boundary import ──
 
 
-def import_bizkaia_boundary(session: Session, tenant_id: str) -> int:
+def import_bizkaia_boundary(tenant_id: str, serving_dir: str | Path) -> int:
     """Import the full Bizkaia territory boundary from GeoEuskadi.
 
-    Replaces the demo boundary with the real territorial boundary.
+    Writes boundaries.parquet as GeoParquet.
     Returns 1 on success.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
     log.info("boundary_import_start")
 
@@ -121,36 +215,33 @@ def import_bizkaia_boundary(session: Session, tenant_id: str) -> int:
     if not features:
         raise ValueError("Could not find Bizkaia boundary in GeoEuskadi")
 
-    # Use the first matching feature
-    geojson_geom = json.dumps(features[0]["geometry"])
+    # Build GeoDataFrame
+    geom = shape(features[0]["geometry"])
+    geom = _ensure_multi(geom)
 
-    # Clear existing boundaries and insert the real one
-    session.execute(
-        text("DELETE FROM boundaries WHERE tenant_id = :tid"),
-        {"tid": tenant_id},
+    gdf = gpd.GeoDataFrame(
+        [{
+            "tenant_id": tenant_id,
+            "name": "Bizkaia",
+            "boundary_type": "region",
+        }],
+        geometry=[geom],
+        crs="EPSG:4326",
     )
 
-    session.execute(
-        text("""
-            INSERT INTO boundaries (tenant_id, name, boundary_type, geom)
-            VALUES (
-                :tid, 'Bizkaia', 'region',
-                ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326))
-            )
-        """),
-        {"tid": tenant_id, "geom": geojson_geom},
-    )
-    session.commit()
+    _write_geoparquet(gdf, serving / "boundaries.parquet")
 
     log.info("boundary_import_complete", features=len(features))
     return 1
 
 
-def import_municipalities(session: Session, tenant_id: str) -> int:
+def import_municipalities(tenant_id: str, serving_dir: str | Path) -> int:
     """Import all Bizkaia municipalities from GeoEuskadi.
 
+    Writes municipalities.parquet as GeoParquet.
     Returns the number of municipalities imported.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
     log.info("municipalities_import_start")
 
@@ -162,13 +253,9 @@ def import_municipalities(session: Session, tenant_id: str) -> int:
     if not features:
         raise ValueError("No Bizkaia municipalities found in GeoEuskadi")
 
-    # Clear existing
-    session.execute(
-        text("DELETE FROM municipalities WHERE tenant_id = :tid"),
-        {"tid": tenant_id},
-    )
+    records: list[dict[str, Any]] = []
+    geometries: list[Any] = []
 
-    count = 0
     for f in features:
         props = f.get("properties", {})
         geom = f.get("geometry")
@@ -178,35 +265,31 @@ def import_municipalities(session: Session, tenant_id: str) -> int:
         muni_code = str(props.get("EUSTAT", props.get("OBJECTID", "")))
         name = props.get("NOMBRE_CAS", props.get("NOMBRE_TOP", f"Municipality {muni_code}"))
 
-        session.execute(
-            text("""
-                INSERT INTO municipalities (tenant_id, muni_code, name, geom)
-                VALUES (
-                    :tid, :muni_code, :name,
-                    ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326))
-                )
-                ON CONFLICT (tenant_id, muni_code) DO UPDATE
-                SET name = EXCLUDED.name, geom = EXCLUDED.geom
-            """),
-            {
-                "tid": tenant_id,
-                "muni_code": muni_code,
-                "name": name,
-                "geom": json.dumps(geom),
-            },
-        )
-        count += 1
+        geom_shape = shape(geom)
+        geom_shape = _ensure_multi(geom_shape)
 
-    session.commit()
+        records.append({
+            "tenant_id": tenant_id,
+            "muni_code": muni_code,
+            "name": name,
+        })
+        geometries.append(geom_shape)
+
+    gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+    _write_geoparquet(gdf, serving / "municipalities.parquet")
+
+    count = len(records)
     log.info("municipalities_import_complete", count=count)
     return count
 
 
-def import_comarcas(session: Session, tenant_id: str) -> int:
+def import_comarcas(tenant_id: str, serving_dir: str | Path) -> int:
     """Import all Bizkaia comarcas from GeoEuskadi.
 
+    Writes comarcas.parquet as GeoParquet.
     Returns the number of comarcas imported.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
     log.info("comarcas_import_start")
 
@@ -218,13 +301,9 @@ def import_comarcas(session: Session, tenant_id: str) -> int:
     if not features:
         raise ValueError("No Bizkaia comarcas found in GeoEuskadi")
 
-    # Clear existing
-    session.execute(
-        text("DELETE FROM comarcas WHERE tenant_id = :tid"),
-        {"tid": tenant_id},
-    )
+    records: list[dict[str, Any]] = []
+    geometries: list[Any] = []
 
-    count = 0
     for f in features:
         props = f.get("properties", {})
         geom = f.get("geometry")
@@ -234,26 +313,20 @@ def import_comarcas(session: Session, tenant_id: str) -> int:
         comarca_code = str(props.get("COM_COM", props.get("OBJECTID", "")))
         name = props.get("COMARCA", f"Comarca {comarca_code}")
 
-        session.execute(
-            text("""
-                INSERT INTO comarcas (tenant_id, comarca_code, name, geom)
-                VALUES (
-                    :tid, :comarca_code, :name,
-                    ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326))
-                )
-                ON CONFLICT (tenant_id, comarca_code) DO UPDATE
-                SET name = EXCLUDED.name, geom = EXCLUDED.geom
-            """),
-            {
-                "tid": tenant_id,
-                "comarca_code": comarca_code,
-                "name": name,
-                "geom": json.dumps(geom),
-            },
-        )
-        count += 1
+        geom_shape = shape(geom)
+        geom_shape = _ensure_multi(geom_shape)
 
-    session.commit()
+        records.append({
+            "tenant_id": tenant_id,
+            "comarca_code": comarca_code,
+            "name": name,
+        })
+        geometries.append(geom_shape)
+
+    gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+    _write_geoparquet(gdf, serving / "comarcas.parquet")
+
+    count = len(records)
     log.info("comarcas_import_complete", count=count)
     return count
 
@@ -261,45 +334,31 @@ def import_comarcas(session: Session, tenant_id: str) -> int:
 # ── Destination imports ──
 
 
-def _dest_type_id(session: Session, code: str) -> int:
-    """Look up a destination_type id by code."""
-    result = session.execute(
-        text("SELECT id FROM destination_types WHERE code = :code"),
-        {"code": code},
-    ).scalar_one_or_none()
-    if result is None:
-        raise ValueError(f"Destination type '{code}' not found in DB")
-    return result
-
-
-def import_schools(session: Session, tenant_id: str) -> int:
+def import_schools(tenant_id: str, serving_dir: str | Path) -> int:
     """Import primary schools in Bizkaia from GeoEuskadi education service.
 
-    Filters by province code '48' (Bizkaia) and primary school types.
+    Appends to destinations.parquet.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
     log.info("schools_import_start")
 
-    type_id = _dest_type_id(session, "school_primary")
+    type_id = _dest_type_id("school_primary")
 
-    # Query schools in Bizkaia — try province filter
+    # Query schools in Bizkaia
     features = _query_all_features(
         SCHOOLS_URL,
         where="PROVINCIA='BIZKAIA' OR PROVINCIA='Bizkaia' OR PROV='48' OR TERRITORIO='48'",
     )
 
     if not features:
-        # Fallback: get all schools and filter by bbox (Bizkaia approx bounds)
+        # Fallback: get all schools and filter by bbox
         features = _query_all_features(SCHOOLS_URL)
         features = _filter_bizkaia_bbox(features)
 
-    # Clear existing schools for this tenant
-    session.execute(
-        text("DELETE FROM destinations WHERE tenant_id = :tid AND type_id = :type_id"),
-        {"tid": tenant_id, "type_id": type_id},
-    )
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
 
-    count = 0
     for f in features:
         props = f.get("properties", {})
         geom = f.get("geometry")
@@ -310,64 +369,54 @@ def import_schools(session: Session, tenant_id: str) -> int:
         if len(coords) < 2:
             continue
 
-        name = props.get("NOMBRE", props.get("IZENA_NOMBRE", f"School {count + 1}"))
+        name = props.get("NOMBRE", props.get("IZENA_NOMBRE", f"School {len(records) + 1}"))
 
-        session.execute(
-            text("""
-                INSERT INTO destinations (tenant_id, type_id, name, geom, weight, metadata)
-                VALUES (
-                    :tid, :type_id, :name,
-                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                    1.0, :meta
-                )
-            """),
-            {
-                "tid": tenant_id,
-                "type_id": type_id,
-                "name": name,
-                "lon": coords[0],
-                "lat": coords[1],
-                "meta": json.dumps({
-                    "source": "geoeuskadi",
-                    "class": props.get("CLASE_CENTRO", ""),
-                }),
-            },
-        )
-        count += 1
+        records.append({
+            "tenant_id": tenant_id,
+            "type_id": type_id,
+            "name": name,
+            "weight": 1.0,
+            "metadata": json.dumps({
+                "source": "geoeuskadi",
+                "class": props.get("CLASE_CENTRO", ""),
+            }),
+        })
+        geometries.append(Point(coords[0], coords[1]))
 
-    session.commit()
+    count = len(records)
+    if records:
+        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+        _append_destinations(gdf, serving)
+
     log.info("schools_import_complete", count=count)
     return count
 
 
-def import_health(session: Session, tenant_id: str) -> int:
+def import_health(tenant_id: str, serving_dir: str | Path) -> int:
     """Import health centres and pharmacies in Bizkaia from GeoEuskadi."""
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
     log.info("health_import_start")
 
-    type_id = _dest_type_id(session, "health_gp")
+    type_id = _dest_type_id("health_gp")
 
     all_features: list[dict[str, Any]] = []
 
-    # Health centres (layer uses TH field for territory)
+    # Health centres
     centres = _query_all_features(HEALTH_CENTRES_URL)
     centres = _filter_bizkaia_bbox(centres)
     all_features.extend(centres)
 
-    # Pharmacies (PROVINCIA field)
+    # Pharmacies
     pharmacies = _query_all_features(
         PHARMACIES_URL,
         where="PROVINCIA='BIZKAIA'",
     )
     all_features.extend(pharmacies)
 
-    # Clear existing
-    session.execute(
-        text("DELETE FROM destinations WHERE tenant_id = :tid AND type_id = :type_id"),
-        {"tid": tenant_id, "type_id": type_id},
-    )
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
 
-    count = 0
     for f in all_features:
         props = f.get("properties", {})
         geom = f.get("geometry")
@@ -378,50 +427,40 @@ def import_health(session: Session, tenant_id: str) -> int:
         if len(coords) < 2:
             continue
 
-        name = props.get("NOMBRE", props.get("TITULAR1", props.get("DENOM_C", f"Health {count + 1}")))
+        name = props.get("NOMBRE", props.get("TITULAR1", props.get("DENOM_C", f"Health {len(records) + 1}")))
 
-        session.execute(
-            text("""
-                INSERT INTO destinations (tenant_id, type_id, name, geom, weight, metadata)
-                VALUES (
-                    :tid, :type_id, :name,
-                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                    1.0, :meta
-                )
-            """),
-            {
-                "tid": tenant_id,
-                "type_id": type_id,
-                "name": name,
-                "lon": coords[0],
-                "lat": coords[1],
-                "meta": json.dumps({"source": "geoeuskadi"}),
-            },
-        )
-        count += 1
+        records.append({
+            "tenant_id": tenant_id,
+            "type_id": type_id,
+            "name": name,
+            "weight": 1.0,
+            "metadata": json.dumps({"source": "geoeuskadi"}),
+        })
+        geometries.append(Point(coords[0], coords[1]))
 
-    session.commit()
+    count = len(records)
+    if records:
+        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+        _append_destinations(gdf, serving)
+
     log.info("health_import_complete", count=count)
     return count
 
 
-def import_supermarkets(session: Session, tenant_id: str) -> int:
+def import_supermarkets(tenant_id: str, serving_dir: str | Path) -> int:
     """Import supermarkets in Bizkaia from EUSTAT ArcGIS service."""
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
     log.info("supermarkets_import_start")
 
-    type_id = _dest_type_id(session, "supermarket")
+    type_id = _dest_type_id("supermarket")
 
     features = _query_all_features(SUPERMARKETS_URL)
     features = _filter_bizkaia_bbox(features)
 
-    # Clear existing
-    session.execute(
-        text("DELETE FROM destinations WHERE tenant_id = :tid AND type_id = :type_id"),
-        {"tid": tenant_id, "type_id": type_id},
-    )
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
 
-    count = 0
     for f in features:
         props = f.get("properties", {})
         geom = f.get("geometry")
@@ -432,95 +471,92 @@ def import_supermarkets(session: Session, tenant_id: str) -> int:
         if len(coords) < 2:
             continue
 
-        name = props.get("DENOM_C", props.get("NOMBRE", f"Supermarket {count + 1}"))
+        name = props.get("DENOM_C", props.get("NOMBRE", f"Supermarket {len(records) + 1}"))
 
-        session.execute(
-            text("""
-                INSERT INTO destinations (tenant_id, type_id, name, geom, weight, metadata)
-                VALUES (
-                    :tid, :type_id, :name,
-                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                    1.0, :meta
-                )
-            """),
-            {
-                "tid": tenant_id,
-                "type_id": type_id,
-                "name": name,
-                "lon": coords[0],
-                "lat": coords[1],
-                "meta": json.dumps({
-                    "source": "geoeuskadi_eustat",
-                    "cnae": props.get("CNAE", ""),
-                }),
-            },
-        )
-        count += 1
+        records.append({
+            "tenant_id": tenant_id,
+            "type_id": type_id,
+            "name": name,
+            "weight": 1.0,
+            "metadata": json.dumps({
+                "source": "geoeuskadi_eustat",
+                "cnae": props.get("CNAE", ""),
+            }),
+        })
+        geometries.append(Point(coords[0], coords[1]))
 
-    session.commit()
+    count = len(records)
+    if records:
+        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+        _append_destinations(gdf, serving)
+
     log.info("supermarkets_import_complete", count=count)
     return count
 
 
-def import_jobs(session: Session, tenant_id: str) -> int:
+def import_jobs(tenant_id: str, serving_dir: str | Path) -> int:
     """Import employment zones (business parks) in Bizkaia from EUSTAT.
 
     Uses polygon centroids as destination points, weighted by area.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
     log.info("jobs_import_start")
 
-    type_id = _dest_type_id(session, "jobs")
+    type_id = _dest_type_id("jobs")
 
     features = _query_all_features(EMPLOYMENT_ZONES_URL)
     features = _filter_bizkaia_bbox(features)
 
-    # Clear existing
-    session.execute(
-        text("DELETE FROM destinations WHERE tenant_id = :tid AND type_id = :type_id"),
-        {"tid": tenant_id, "type_id": type_id},
-    )
+    records: list[dict[str, Any]] = []
+    geometries: list[Point] = []
 
-    count = 0
     for f in features:
         props = f.get("properties", {})
-        geom = f.get("geometry")
-        if not geom:
+        geom_json = f.get("geometry")
+        if not geom_json:
             continue
 
-        geom_json = json.dumps(geom)
+        name = props.get("GAE_DS_C", props.get("DENOM_C", props.get("NOMBRE", f"Employment zone {len(records) + 1}")))
 
-        name = props.get("GAE_DS_C", props.get("DENOM_C", props.get("NOMBRE", f"Employment zone {count + 1}")))
+        # Use centroid for polygon geometries
+        geom_shape = shape(geom_json)
+        centroid = geom_shape.centroid
 
-        # Insert using ST_Centroid for polygon geometries
-        session.execute(
-            text("""
-                INSERT INTO destinations (tenant_id, type_id, name, geom, weight, metadata)
-                VALUES (
-                    :tid, :type_id, :name,
-                    ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326)),
-                    1.0, :meta
-                )
-            """),
-            {
-                "tid": tenant_id,
-                "type_id": type_id,
-                "name": name,
-                "geom": geom_json,
-                "meta": json.dumps({
-                    "source": "geoeuskadi_eustat",
-                    "code": props.get("GAE_CODAE", ""),
-                }),
-            },
-        )
-        count += 1
+        records.append({
+            "tenant_id": tenant_id,
+            "type_id": type_id,
+            "name": name,
+            "weight": 1.0,
+            "metadata": json.dumps({
+                "source": "geoeuskadi_eustat",
+                "code": props.get("GAE_CODAE", ""),
+            }),
+        })
+        geometries.append(centroid)
 
-    session.commit()
+    count = len(records)
+    if records:
+        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+        _append_destinations(gdf, serving)
+
     log.info("jobs_import_complete", count=count)
     return count
 
 
 # ── Helpers ──
+
+
+def _append_destinations(new_gdf: gpd.GeoDataFrame, serving: Path) -> None:
+    """Append new destinations to the existing destinations.parquet, or create it."""
+    dest_path = serving / "destinations.parquet"
+    if dest_path.exists():
+        existing = gpd.read_parquet(dest_path)
+        combined = pd.concat([existing, new_gdf], ignore_index=True)
+        combined = gpd.GeoDataFrame(combined, geometry="geometry", crs="EPSG:4326")
+    else:
+        combined = new_gdf
+    _write_geoparquet(combined, dest_path)
 
 
 def _filter_bizkaia_bbox(features: list[dict[str, Any]]) -> list[dict[str, Any]]:

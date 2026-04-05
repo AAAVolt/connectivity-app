@@ -3,7 +3,6 @@
 
 -- Transport modes (global lookup)
 INSERT INTO modes (code, label) VALUES
-    ('WALK',    'Walking'),
     ('TRANSIT', 'Public Transport')
 ON CONFLICT (code) DO NOTHING;
 

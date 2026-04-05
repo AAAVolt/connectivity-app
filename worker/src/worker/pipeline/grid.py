@@ -1,108 +1,100 @@
 """Grid generation: create 250 m cells over a tenant's boundary.
 
-The grid is generated in a projected CRS (EPSG:25830 – ETRS89 / UTM 30N)
-for metric accuracy, then stored in WGS84 (EPSG:4326).
+Uses GeoPandas + Shapely instead of PostGIS.  The grid is generated in
+EPSG:25830 (ETRS89 / UTM 30N) for metric accuracy, then stored in
+WGS84 (EPSG:4326) as GeoParquet.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import geopandas as gpd
+import numpy as np
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from shapely.geometry import box
 
 logger = structlog.get_logger()
 
-# EPSG:25830 – ETRS89 / UTM zone 30N (standard projected CRS for Bizkaia)
-PROJECTED_SRID = 25830
-STORAGE_SRID = 4326
+PROJECTED_CRS = "EPSG:25830"
+STORAGE_CRS = "EPSG:4326"
 
 
 def build_grid(
-    session: Session,
     tenant_id: str,
+    serving_dir: str | Path,
     cell_size_m: int = 250,
 ) -> int:
     """Generate a grid of square cells over the tenant's boundary.
 
-    Algorithm:
-      1. Read boundary, transform to projected CRS (metric).
-      2. Snap bounding box to cell_size grid.
-      3. Generate candidate cells via generate_series.
-      4. Keep only cells that intersect the boundary.
-      5. Transform back to storage CRS and insert.
-
-    Idempotent: deletes existing cells for the tenant before inserting.
+    Reads ``boundaries.parquet`` from *serving_dir*, generates the grid
+    in projected CRS, filters to cells intersecting the boundary, and
+    writes ``grid_cells.parquet`` back to *serving_dir*.
 
     Returns the number of cells created.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, cell_size_m=cell_size_m)
     log.info("grid_build_start")
 
-    # Check boundary exists
-    boundary_exists = session.execute(
-        text("SELECT EXISTS(SELECT 1 FROM boundaries WHERE tenant_id = :tid)"),
-        {"tid": tenant_id},
-    ).scalar()
+    # Read boundary
+    boundaries_path = serving / "boundaries.parquet"
+    if not boundaries_path.exists():
+        raise FileNotFoundError(
+            f"No boundaries.parquet found in {serving}. "
+            "Run import-geoeuskadi first."
+        )
 
-    if not boundary_exists:
+    boundaries = gpd.read_parquet(boundaries_path)
+    tenant_boundary = boundaries[boundaries["tenant_id"] == tenant_id]
+    if tenant_boundary.empty:
         raise ValueError(f"No boundary found for tenant {tenant_id}")
 
-    # Delete existing grid cells (cascades to travel_times, scores)
-    deleted = session.execute(
-        text("DELETE FROM grid_cells WHERE tenant_id = :tid"),
-        {"tid": tenant_id},
-    ).rowcount
-    if deleted:
-        log.info("grid_old_cells_deleted", count=deleted)
+    # Project to UTM for metric grid generation
+    boundary_proj = tenant_boundary.to_crs(PROJECTED_CRS)
+    boundary_union = boundary_proj.unary_union
+    minx, miny, maxx, maxy = boundary_union.bounds
 
-    # Generate grid via PostGIS
-    insert_sql = text("""
-        INSERT INTO grid_cells (tenant_id, cell_code, geom, centroid)
-        WITH boundary_proj AS (
-            SELECT ST_Transform(geom, :proj_srid) AS geom
-            FROM boundaries
-            WHERE tenant_id = :tid
-            LIMIT 1
-        ),
-        bbox AS (
-            SELECT
-                (floor(ST_XMin(geom) / :cs) * :cs)::bigint AS xmin,
-                (floor(ST_YMin(geom) / :cs) * :cs)::bigint AS ymin,
-                (ceil(ST_XMax(geom)  / :cs) * :cs)::bigint AS xmax,
-                (ceil(ST_YMax(geom)  / :cs) * :cs)::bigint AS ymax
-            FROM boundary_proj
-        ),
-        grid_raw AS (
-            SELECT
-                x, y,
-                ST_MakeEnvelope(x, y, x + :cs, y + :cs, :proj_srid) AS geom
-            FROM bbox,
-                generate_series(xmin, xmax - :cs, CAST(:cs_step AS bigint)) AS x,
-                generate_series(ymin, ymax - :cs, CAST(:cs_step AS bigint)) AS y
-        ),
-        grid_clipped AS (
-            SELECT g.x, g.y, g.geom
-            FROM grid_raw g, boundary_proj b
-            WHERE ST_Intersects(g.geom, b.geom)
-        )
-        SELECT
-            :tid,
-            'E' || x || '_N' || y,
-            ST_Transform(geom, :store_srid),
-            ST_Transform(ST_Centroid(geom), :store_srid)
-        FROM grid_clipped
-    """)
+    # Snap to grid
+    x0 = int(np.floor(minx / cell_size_m)) * cell_size_m
+    y0 = int(np.floor(miny / cell_size_m)) * cell_size_m
+    x1 = int(np.ceil(maxx / cell_size_m)) * cell_size_m
+    y1 = int(np.ceil(maxy / cell_size_m)) * cell_size_m
 
-    result = session.execute(insert_sql, {
-        "tid": tenant_id,
-        "cs": cell_size_m,
-        "cs_step": cell_size_m,
-        "proj_srid": PROJECTED_SRID,
-        "store_srid": STORAGE_SRID,
-    })
+    # Generate candidate cells
+    xs = np.arange(x0, x1, cell_size_m)
+    ys = np.arange(y0, y1, cell_size_m)
+    log.info("grid_candidates", x_count=len(xs), y_count=len(ys))
 
-    cell_count = result.rowcount
-    session.commit()
+    cells = []
+    for x in xs:
+        for y in ys:
+            cell = box(x, y, x + cell_size_m, y + cell_size_m)
+            if cell.intersects(boundary_union):
+                cells.append({
+                    "cell_code": f"E{int(x)}_N{int(y)}",
+                    "geometry": cell,
+                })
 
-    log.info("grid_build_complete", cells_created=cell_count)
-    return cell_count
+    grid = gpd.GeoDataFrame(cells, crs=PROJECTED_CRS)
+    log.info("grid_clipped", cells=len(grid))
+
+    # Transform to WGS84 for storage
+    grid = grid.to_crs(STORAGE_CRS)
+
+    # Add metadata columns
+    grid = grid.reset_index(drop=True)
+    grid["id"] = grid.index + 1
+    grid["tenant_id"] = tenant_id
+    grid["population"] = 0.0
+    grid["muni_code"] = None
+
+    # Rename geometry to 'geom' for consistency with backend schema
+    grid = grid.rename_geometry("geom")
+
+    # Write GeoParquet
+    out_path = serving / "grid_cells.parquet"
+    grid.to_parquet(out_path)
+
+    log.info("grid_build_complete", cells_created=len(grid), path=str(out_path))
+    return len(grid)

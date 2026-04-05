@@ -4,6 +4,8 @@ Primary source: UDALMAP indicator 167 (renta personal disponible, index CAE=100)
 Secondary: UDALMAP indicators 184/185 (mean personal income by sex, EUR)
 
 These are clean CSVs with municipality rows and year columns.
+
+Output: municipality_income.parquet in the serving directory.
 """
 
 from __future__ import annotations
@@ -11,9 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import pandas as pd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 logger = structlog.get_logger()
 
@@ -39,17 +40,17 @@ INDICATORS = {
 def _parse_udalmap_csv(
     content: str,
 ) -> dict[str, dict[int, float]]:
-    """Parse UDALMAP CSV: municipality code → {year: value}.
+    """Parse UDALMAP CSV: municipality code -> {year: value}.
 
     Format: semicolon-delimited, decimal comma.
-    Header row has: Código municipio; Municipio; 2023; 2022; ...
+    Header row has: Codigo municipio; Municipio; 2023; 2022; ...
     Province/comarca summary rows are filtered out (we only keep 48xxx codes).
     """
     lines = content.strip().splitlines()
     if not lines:
         return {}
 
-    # Find header row — must contain both a label AND year columns (4-digit numbers)
+    # Find header row -- must contain both a label AND year columns (4-digit numbers)
     header_idx = 0
     for i, line in enumerate(lines):
         parts = line.split(";")
@@ -57,7 +58,7 @@ def _parse_udalmap_csv(
             p.strip().strip('"').isdigit() and len(p.strip().strip('"')) == 4
             for p in parts
         )
-        has_label = "Municipio" in line or "municipio" in line or "Código" in line
+        has_label = "Municipio" in line or "municipio" in line or "Codigo" in line
         if has_label and has_years:
             header_idx = i
             break
@@ -86,7 +87,7 @@ def _parse_udalmap_csv(
         for ci, yr in year_cols:
             if ci < len(parts):
                 val_str = parts[ci].strip().strip('"').replace(",", ".")
-                if val_str and val_str != ".." and val_str != "-":
+                if val_str and val_str not in ("..", "-", ""):
                     try:
                         year_values[yr] = float(val_str)
                     except ValueError:
@@ -99,7 +100,7 @@ def _parse_udalmap_csv(
 
 
 def import_income(
-    session: Session,
+    serving_dir: str | Path,
     csv_dir: Path | None = None,
     *,
     download: bool = True,
@@ -109,7 +110,10 @@ def import_income(
     If csv_dir is provided, reads from local files named
     renta_index.csv, renta_personal_total.csv, renta_disponible.csv.
     Otherwise downloads from Open Data Euskadi.
+
+    Writes municipality_income.parquet.
     """
+    serving = Path(serving_dir)
     log = logger.bind(source="udalmap_income")
 
     # Download or read each indicator
@@ -141,10 +145,10 @@ def import_income(
 
     if not all_years:
         log.warning("income_no_data")
-        return {"inserted": 0}
+        return {"inserted": 0, "municipalities": 0, "years": []}
 
-    # Insert per (muni, year) — but only years with data
-    inserted = 0
+    # Build records per (muni, year) -- only years with data
+    records: list[dict[str, object]] = []
     for muni_code in sorted(all_munis):
         for year in sorted(all_years):
             renta_index = indicator_data.get("renta_index", {}).get(muni_code, {}).get(year)
@@ -154,27 +158,22 @@ def import_income(
             if renta_index is None and renta_personal is None and renta_disponible is None:
                 continue
 
-            session.execute(
-                text("""
-                    INSERT INTO municipality_income
-                        (muni_code, year, renta_personal_media, renta_disponible_media, renta_index)
-                    VALUES (:muni_code, :year, :renta_personal, :renta_disponible, :renta_index)
-                    ON CONFLICT (muni_code, year) DO UPDATE SET
-                        renta_personal_media = COALESCE(EXCLUDED.renta_personal_media, municipality_income.renta_personal_media),
-                        renta_disponible_media = COALESCE(EXCLUDED.renta_disponible_media, municipality_income.renta_disponible_media),
-                        renta_index = COALESCE(EXCLUDED.renta_index, municipality_income.renta_index)
-                """),
-                {
-                    "muni_code": muni_code,
-                    "year": year,
-                    "renta_personal": renta_personal,
-                    "renta_disponible": renta_disponible,
-                    "renta_index": renta_index,
-                },
-            )
-            inserted += 1
+            records.append({
+                "muni_code": muni_code,
+                "year": year,
+                "renta_personal_media": renta_personal,
+                "renta_disponible_media": renta_disponible,
+                "renta_index": renta_index,
+            })
 
-    session.commit()
+    # Write Parquet
+    inserted = len(records)
+    if records:
+        df = pd.DataFrame(records)
+        out_path = serving / "municipality_income.parquet"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(out_path, index=False)
+
     log.info("income_imported", inserted=inserted, municipalities=len(all_munis))
 
     return {

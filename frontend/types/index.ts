@@ -30,7 +30,7 @@ export interface AreaStatsResponse {
 
 export interface ConnectivityScore {
   cell_id: number;
-  mode: "WALK" | "TRANSIT";
+  mode: "TRANSIT";
   purpose: string;
   score: number;
   score_normalized: number | null;

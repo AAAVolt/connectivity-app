@@ -1,8 +1,10 @@
-"""Import EUSTAT núcleo polygons for dasymetric population masking.
+"""Import EUSTAT nucleo polygons for dasymetric population masking.
 
-Núcleos are concentrated settlement areas.  Rows with NUC_NUCD = '99'
+Nucleos are concentrated settlement areas.  Rows with NUC_NUCD = '99'
 are *diseminado* (dispersed rural) and are stored but flagged so they
 can be excluded during population disaggregation.
+
+Output: nucleos.parquet (GeoParquet) in the serving directory.
 
 Data source:
   https://www.geo.euskadi.eus/cartografia/DatosDescarga/Limites/Unidades_estadisticas/NUCLEOS_EUSTAT_5000_ETRS89.zip
@@ -15,8 +17,6 @@ from pathlib import Path
 import geopandas as gpd
 import structlog
 from shapely.geometry import MultiPolygon, Polygon
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 logger = structlog.get_logger()
 
@@ -42,16 +42,16 @@ def _ensure_multi(geom: object) -> MultiPolygon:
 
 
 def import_nucleos(
-    session: Session,
     tenant_id: str,
+    serving_dir: str | Path,
     shp_path: Path,
-    *,
-    clear_existing: bool = True,
 ) -> dict[str, object]:
-    """Import EUSTAT núcleo polygons filtered to Bizkaia.
+    """Import EUSTAT nucleo polygons filtered to Bizkaia.
 
+    Writes nucleos.parquet as GeoParquet.
     Returns statistics about imported records.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, shp=str(shp_path))
     log.info("import_nucleos_start")
 
@@ -69,44 +69,34 @@ def import_nucleos(
     if biz.crs and biz.crs.to_epsg() != STORAGE_SRID:
         biz = biz.to_crs(epsg=STORAGE_SRID)
 
-    if clear_existing:
-        deleted = session.execute(
-            text("DELETE FROM nucleos WHERE tenant_id = :tid"),
-            {"tid": tenant_id},
-        ).rowcount
-        if deleted:
-            log.info("import_nucleos_cleared", deleted=deleted)
-
-    insert_sql = text("""
-        INSERT INTO nucleos (tenant_id, code, nucleo_num, name,
-                             entity_name, muni_code, muni_name, geom)
-        VALUES (:tid, :code, :nnum, :name, :entity, :muni_code, :muni_name,
-                ST_Multi(ST_MakeValid(ST_SetSRID(ST_GeomFromText(:wkt), :srid))))
-    """)
-
+    # Build output records
+    records: list[dict[str, object]] = []
+    geometries: list[MultiPolygon] = []
     nucleo_count = 0
     diseminado_count = 0
 
     for _, row in biz.iterrows():
         nuc_num = str(row["NUC_NUCD"]).strip()
-        session.execute(insert_sql, {
-            "tid": tenant_id,
+        records.append({
+            "tenant_id": tenant_id,
             "code": str(row["NUC_CL"]),
-            "nnum": nuc_num,
+            "nucleo_num": nuc_num,
             "name": str(row["NUC_DS_O"]),
-            "entity": str(row.get("NUC_ENTI_D", "")),
+            "entity_name": str(row.get("NUC_ENTI_D", "")),
             "muni_code": str(row["NUC_MUNI"]),
             "muni_name": str(row["NUC_MUNI_D"]),
-            "wkt": row.geometry.wkt,
-            "srid": STORAGE_SRID,
         })
+        geometries.append(row.geometry)
 
         if nuc_num == "99":
             diseminado_count += 1
         else:
             nucleo_count += 1
 
-    session.commit()
+    out_gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+    out_path = serving / "nucleos.parquet"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_gdf.to_parquet(out_path)
 
     stats: dict[str, object] = {
         "total": nucleo_count + diseminado_count,

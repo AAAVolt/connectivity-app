@@ -48,6 +48,8 @@ docker-compose.override.yml
 *.osm
 *.gtfs.zip
 /data/
+!/data/serving/
+/data/serving/*.parquet
 
 # Test / Coverage
 .coverage

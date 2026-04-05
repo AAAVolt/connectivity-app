@@ -9,18 +9,12 @@ from backend.config import Settings, get_settings
 DEMO_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 
-async def get_tenant(
+def get_tenant(
     authorization: str | None = Header(None, include_in_schema=False),
     x_tenant_id: str | None = Header(None),
     settings: Settings = Depends(get_settings),
 ) -> TenantContext:
-    """Extract tenant context from JWT or dev header.
-
-    In local/dev environment:
-      - Uses X-Tenant-ID header if present, otherwise defaults to demo tenant.
-    In production:
-      - Requires a valid JWT Bearer token.
-    """
+    """Extract tenant context from JWT or dev header."""
     if settings.environment == "local":
         tenant_id = x_tenant_id or DEMO_TENANT_ID
         return TenantContext(tenant_id=tenant_id, user_id="dev-user")

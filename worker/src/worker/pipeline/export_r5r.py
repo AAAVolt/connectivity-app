@@ -8,73 +8,58 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import geopandas as gpd
 import structlog
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 logger = structlog.get_logger()
 
 
 def export_r5r_inputs(
-    session: Session,
     tenant_id: str,
+    serving_dir: str | Path,
     output_dir: Path,
 ) -> dict[str, int]:
     """Write origins.csv and destinations.csv for R5R.
 
-    origins.csv   – grid-cell centroids (id, lon, lat)
-    destinations.csv – destination points (id, lon, lat)
-
+    Reads grid_cells.parquet and destinations.parquet from serving_dir.
     Returns dict with row counts.
     """
+    serving = Path(serving_dir)
     log = logger.bind(tenant_id=tenant_id, output_dir=str(output_dir))
     log.info("export_r5r_start")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Origins: grid cell centroids ──
-    origins = session.execute(
-        text("""
-            SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat
-            FROM grid_cells
-            WHERE tenant_id = :tid
-            ORDER BY id
-        """),
-        {"tid": tenant_id},
-    ).fetchall()
+    # Origins: grid cell centroids
+    grid = gpd.read_parquet(serving / "grid_cells.parquet")
+    grid_tenant = grid[grid["tenant_id"] == tenant_id]
+    if grid_tenant.empty:
+        raise ValueError("No grid cells found - run build-grid first")
 
-    if not origins:
-        raise ValueError("No grid cells found — run build-grid first")
-
+    centroids = grid_tenant.geometry.centroid
     origins_path = output_dir / "origins.csv"
     with open(origins_path, "w") as f:
         f.write("id,lon,lat\n")
-        for row in origins:
-            f.write(f"{row.id},{row.lon:.8f},{row.lat:.8f}\n")
+        for idx, row in grid_tenant.iterrows():
+            centroid = centroids.loc[idx]
+            f.write(f"{row['id']},{centroid.x:.8f},{centroid.y:.8f}\n")
 
-    # ── Destinations ──
-    destinations = session.execute(
-        text("""
-            SELECT id, ST_X(geom) AS lon, ST_Y(geom) AS lat
-            FROM destinations
-            WHERE tenant_id = :tid
-            ORDER BY id
-        """),
-        {"tid": tenant_id},
-    ).fetchall()
-
-    if not destinations:
-        raise ValueError("No destinations found — run import-geoeuskadi first")
+    # Destinations
+    dests = gpd.read_parquet(serving / "destinations.parquet")
+    dests_tenant = dests[dests["tenant_id"] == tenant_id]
+    if dests_tenant.empty:
+        raise ValueError("No destinations found - run import-geoeuskadi first")
 
     destinations_path = output_dir / "destinations.csv"
     with open(destinations_path, "w") as f:
         f.write("id,lon,lat\n")
-        for row in destinations:
-            f.write(f"{row.id},{row.lon:.8f},{row.lat:.8f}\n")
+        for _, row in dests_tenant.iterrows():
+            pt = row.geometry
+            f.write(f"{row['id']},{pt.x:.8f},{pt.y:.8f}\n")
 
     stats = {
-        "origins": len(origins),
-        "destinations": len(destinations),
+        "origins": len(grid_tenant),
+        "destinations": len(dests_tenant),
     }
     log.info("export_r5r_complete", **stats)
     return stats

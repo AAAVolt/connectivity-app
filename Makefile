@@ -1,16 +1,16 @@
-# Bizkaia Connectivity MVP — local development commands
+# Bizkaia Connectivity MVP — local development commands (DuckDB)
 # Usage: make <target>
 
 COMPOSE := docker compose -f docker-compose.local.yml
 
 .PHONY: up down build logs restart \
-        db-shell backend-shell worker-shell \
+        backend-shell worker-shell \
         test test-backend test-frontend \
-        seed routing clean
+        seed routing upload clean
 
 # ── Lifecycle ───────────────────────────────────────────
 
-up:              ## Start all services (db, backend, frontend)
+up:              ## Start all services (backend, frontend)
 	$(COMPOSE) up -d --build
 	@echo "\n  ✔ App running:"
 	@echo "    Frontend → http://localhost:3000"
@@ -32,16 +32,6 @@ logs:            ## Tail logs (all services)
 logs-%:          ## Tail logs for one service, e.g. make logs-backend
 	$(COMPOSE) logs -f $*
 
-# ── Database ────────────────────────────────────────────
-
-db-shell:        ## Open psql in the database container
-	$(COMPOSE) exec db psql -U bizkaia -d bizkaia
-
-db-reset:        ## Destroy and recreate the database volume
-	$(COMPOSE) down -v
-	$(COMPOSE) up -d db
-	@echo "  ✔ Database volume wiped and db restarted"
-
 # ── Shells ──────────────────────────────────────────────
 
 backend-shell:   ## Open a shell in the backend container
@@ -50,7 +40,7 @@ backend-shell:   ## Open a shell in the backend container
 worker-shell:    ## Open a shell in the worker container
 	$(COMPOSE) exec worker bash
 
-# ── Tests ───────────────────────────────────────────────
+# ── Tests ��──────────────────────────────────────────────
 
 test: test-backend test-frontend   ## Run all tests
 
@@ -60,20 +50,34 @@ test-backend:    ## Run backend pytest suite
 test-frontend:   ## Run frontend vitest suite
 	$(COMPOSE) exec frontend pnpm test --run
 
-# ── Routing (r5r) ──────────────────────────────────────
+# ── Routing (r5r) ─────────────────────────────────────��
 
 routing:         ## Run the r5r routing container (one-shot)
 	$(COMPOSE) run --rm r5r
 
-# ── Worker tasks ────────────────────────────────────────
+# ── Worker tasks ─���──────────────────────────────────��───
 
-seed:            ## Run worker data ingestion pipeline
-	$(COMPOSE) run --rm worker python -m worker.cli ingest
+seed:            ## Run worker demo data pipeline
+	$(COMPOSE) run --rm worker python -m worker.cli seed-demo
+
+import:          ## Import real data from GeoEuskadi
+	$(COMPOSE) run --rm worker python -m worker.cli import-geoeuskadi
+
+pipeline:        ## Run full production pipeline
+	$(COMPOSE) run --rm worker python -m worker.cli run-pipeline
+
+# ── GCS Upload ──────────────────────────────────────────
+
+upload:          ## Upload serving data to GCS
+	$(COMPOSE) run --rm worker python -m worker.cli upload-gcs
+
+reload:          ## Trigger backend to reload data from disk
+	curl -s -X POST http://localhost:8000/admin/reload
 
 # ── Cleanup ─────────────────────────────────────────────
 
-clean:           ## Stop containers, remove volumes and built images
-	$(COMPOSE) down -v --rmi local
+clean:           ## Stop containers and remove built images
+	$(COMPOSE) down --rmi local
 
 # ── Help ────────────────────────────────────────────────
 

@@ -1,11 +1,12 @@
 # Scoring parameters for the Bizkaia Connectivity MVP
 #
-# purpose_map: maps destination_types.code → scoring purpose bucket
+# purpose_map: maps destination_types.code -> scoring purpose bucket
 # impedance:   exp(-alpha * t) decay rates per (mode, purpose)
 # diminishing:  concave transform exponent (0 < beta < 1)
 # combined_weights: must sum to 1.0 across all (mode, purpose) pairs
 
-# Identity mapping – each POI type is its own purpose bucket
+# Identity mapping – each POI type is its own purpose bucket.
+# Includes both real GeoEuskadi codes and synthetic seed_demo codes.
 purpose_map:
   aeropuerto: aeropuerto
   bachiller: bachiller
@@ -17,6 +18,11 @@ purpose_map:
   osakidetza: osakidetza
   residencia: residencia
   universidad: universidad
+  # Synthetic demo types (used by seed-demo command)
+  jobs: jobs
+  school_primary: school_primary
+  health_gp: health_gp
+  supermarket: supermarket
 
 impedance:
   TRANSIT:
@@ -30,13 +36,19 @@ impedance:
     osakidetza: 0.03
     residencia: 0.03
     universidad: 0.03
+    jobs: 0.03
+    school_primary: 0.03
+    health_gp: 0.03
+    supermarket: 0.03
 
 diminishing:
   beta: 0.7
 
 max_travel_time: 120
 
-# Equal weights across all 10 POI types (0.10 each, sum = 1.0)
+# Equal weights across all POI types (TRANSIT only)
+# Real data: 10 types x 0.10 = 1.0
+# Demo data: 4 types x 0.25 = 1.0
 combined_weights:
   TRANSIT:
     aeropuerto: 0.10
@@ -49,3 +61,7 @@ combined_weights:
     osakidetza: 0.10
     residencia: 0.10
     universidad: 0.10
+    jobs: 0.25
+    school_primary: 0.25
+    health_gp: 0.25
+    supermarket: 0.25

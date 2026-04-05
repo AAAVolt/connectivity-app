@@ -120,7 +120,7 @@ async def test_get_cell_found(_mock_db: AsyncMock) -> None:
     cell_result = MagicMock()
     cell_result.one_or_none.return_value = cell_row
 
-    score_rows = [ScoreRow("WALK", "hospital", 1.5, 55.0)]
+    score_rows = [ScoreRow("TRANSIT", "hospital", 1.5, 55.0)]
     scores_result = MagicMock()
     scores_result.fetchall.return_value = score_rows
 
@@ -138,5 +138,5 @@ async def test_get_cell_found(_mock_db: AsyncMock) -> None:
     assert data["population"] == 150.0
     assert data["combined_score_normalized"] == 67.8
     assert len(data["scores"]) == 1
-    assert data["scores"][0]["mode"] == "WALK"
+    assert data["scores"][0]["mode"] == "TRANSIT"
     assert data["scores"][0]["purpose"] == "hospital"

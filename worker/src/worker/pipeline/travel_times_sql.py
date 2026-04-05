@@ -16,7 +16,6 @@ logger = structlog.get_logger()
 
 # Mode parameters: (speed_kmh, wait_minutes, max_distance_metres)
 MODES = {
-    "WALK": (3.6, 0.0, 3600),       # 3.6 km/h, no wait, 3.6 km max
     "TRANSIT": (15.0, 5.0, 13750),   # 15 km/h, 5 min wait, 13.75 km max
 }
 

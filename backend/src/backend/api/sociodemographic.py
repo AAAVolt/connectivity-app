@@ -6,14 +6,14 @@ for the dashboard enrichment layer.
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
-from backend.db import get_db
+from backend.db import DuckDBSession, get_db
 
 router = APIRouter(prefix="/sociodemographic", tags=["sociodemographic"])
 
@@ -73,7 +73,6 @@ class MunicipalitySocioProfile(BaseModel):
     """Combined sociodemographic profile for one municipality."""
     muni_code: str
     name: str
-    # Demographics
     pop_total: int | None
     pop_0_17: int | None
     pop_18_25: int | None
@@ -81,13 +80,10 @@ class MunicipalitySocioProfile(BaseModel):
     pct_0_17: float | None
     pct_18_25: float | None
     pct_65_plus: float | None
-    # Income
     renta_personal_media: float | None
     renta_disponible_media: float | None
     renta_index: float | None
-    # Car ownership
     vehicles_per_inhab: float | None
-    # Connectivity (joined from existing data)
     weighted_avg_score: float | None
     population: float | None
 
@@ -98,122 +94,117 @@ class MunicipalitySocioProfile(BaseModel):
 
 
 @router.get("/demographics", response_model=list[MunicipalityDemographics])
-async def get_demographics(
+def get_demographics(
     year: int = Query(2025, description="Reference year"),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityDemographics]:
     """Return age-group demographics per municipality."""
-    result = await db.execute(
-        text("""
-            SELECT d.muni_code, COALESCE(m.name, d.muni_code) AS name,
-                   d.year, d.pop_total, d.pop_0_17, d.pop_18_25,
-                   d.pop_26_64, d.pop_65_plus,
-                   d.pct_0_17, d.pct_18_25, d.pct_65_plus
-            FROM municipality_demographics d
-            LEFT JOIN municipalities m ON m.muni_code = d.muni_code
-                AND m.tenant_id = :tenant_id
-            WHERE d.year = :year
-            ORDER BY d.pop_total DESC
-        """),
+    result = db.execute(
+        """
+        SELECT d.muni_code, COALESCE(m.name, d.muni_code) AS name,
+               d.year, d.pop_total, d.pop_0_17, d.pop_18_25,
+               d.pop_26_64, d.pop_65_plus,
+               d.pct_0_17, d.pct_18_25, d.pct_65_plus
+        FROM municipality_demographics d
+        LEFT JOIN municipalities m ON m.muni_code = d.muni_code
+            AND m.tenant_id = $tenant_id
+        WHERE d.year = $year
+        ORDER BY d.pop_total DESC
+        """,
         {"year": year, "tenant_id": tenant.tenant_id},
     )
-    return [MunicipalityDemographics(**dict(row._mapping)) for row in result]
+    return [MunicipalityDemographics(**row._mapping) for row in result.fetchall()]
 
 
 @router.get("/income", response_model=list[MunicipalityIncome])
-async def get_income(
+def get_income(
     year: int | None = Query(None, description="Year (latest if omitted)"),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityIncome]:
     """Return income indicators per municipality."""
     if year is None:
-        yr_row = await db.execute(
-            text("SELECT MAX(year) FROM municipality_income")
-        )
+        yr_row = db.execute("SELECT MAX(year) FROM municipality_income")
         year = yr_row.scalar() or 2023
 
-    result = await db.execute(
-        text("""
-            SELECT i.muni_code, COALESCE(m.name, i.muni_code) AS name,
-                   i.year, i.renta_personal_media,
-                   i.renta_disponible_media, i.renta_index
-            FROM municipality_income i
-            LEFT JOIN municipalities m ON m.muni_code = i.muni_code
-                AND m.tenant_id = :tenant_id
-            WHERE i.year = :year
-            ORDER BY i.renta_personal_media DESC NULLS LAST
-        """),
+    result = db.execute(
+        """
+        SELECT i.muni_code, COALESCE(m.name, i.muni_code) AS name,
+               i.year, i.renta_personal_media,
+               i.renta_disponible_media, i.renta_index
+        FROM municipality_income i
+        LEFT JOIN municipalities m ON m.muni_code = i.muni_code
+            AND m.tenant_id = $tenant_id
+        WHERE i.year = $year
+        ORDER BY i.renta_personal_media DESC NULLS LAST
+        """,
         {"year": year, "tenant_id": tenant.tenant_id},
     )
-    return [MunicipalityIncome(**dict(row._mapping)) for row in result]
+    return [MunicipalityIncome(**row._mapping) for row in result.fetchall()]
 
 
 @router.get("/car-ownership", response_model=list[MunicipalityCarOwnership])
-async def get_car_ownership(
+def get_car_ownership(
     year: int | None = Query(None, description="Year (latest if omitted)"),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityCarOwnership]:
     """Return car ownership rates per municipality."""
     if year is None:
-        yr_row = await db.execute(
-            text("SELECT MAX(year) FROM municipality_car_ownership")
-        )
+        yr_row = db.execute("SELECT MAX(year) FROM municipality_car_ownership")
         year = yr_row.scalar() or 2023
 
-    result = await db.execute(
-        text("""
-            SELECT c.muni_code, COALESCE(m.name, c.muni_code) AS name,
-                   c.year, c.vehicles_per_inhab
-            FROM municipality_car_ownership c
-            LEFT JOIN municipalities m ON m.muni_code = c.muni_code
-                AND m.tenant_id = :tenant_id
-            WHERE c.year = :year
-            ORDER BY c.vehicles_per_inhab ASC
-        """),
+    result = db.execute(
+        """
+        SELECT c.muni_code, COALESCE(m.name, c.muni_code) AS name,
+               c.year, c.vehicles_per_inhab
+        FROM municipality_car_ownership c
+        LEFT JOIN municipalities m ON m.muni_code = c.muni_code
+            AND m.tenant_id = $tenant_id
+        WHERE c.year = $year
+        ORDER BY c.vehicles_per_inhab ASC
+        """,
         {"year": year, "tenant_id": tenant.tenant_id},
     )
-    return [MunicipalityCarOwnership(**dict(row._mapping)) for row in result]
+    return [MunicipalityCarOwnership(**row._mapping) for row in result.fetchall()]
 
 
 @router.get("/frequency/geojson", response_model=FrequencyGeoJSON)
-async def get_frequency_geojson(
+def get_frequency_geojson(
     time_window: str = Query("07:00-09:00", description="Time window"),
     min_dph: float = Query(0, description="Min departures/hour filter"),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
     tenant: TenantContext = Depends(get_tenant),
 ) -> FrequencyGeoJSON:
     """Return stop frequencies as GeoJSON for map overlay."""
-    result = await db.execute(
-        text("""
-            SELECT operator, stop_id, stop_name, departures,
-                   departures_per_hour,
-                   ST_X(geom) AS lon, ST_Y(geom) AS lat
-            FROM stop_frequency
-            WHERE time_window = :tw AND departures_per_hour >= :min_dph
-                  AND geom IS NOT NULL
-            ORDER BY departures_per_hour DESC
-        """),
+    result = db.execute(
+        """
+        SELECT operator, stop_id, stop_name, departures,
+               departures_per_hour,
+               ST_X(geom) AS lon, ST_Y(geom) AS lat
+        FROM stop_frequency
+        WHERE time_window = $tw AND departures_per_hour >= $min_dph
+              AND geom IS NOT NULL
+        ORDER BY departures_per_hour DESC
+        """,
         {"tw": time_window, "min_dph": min_dph},
     )
 
     features = []
-    for row in result:
-        r = row._mapping
+    for row in result.fetchall():
         features.append({
             "type": "Feature",
             "geometry": {
                 "type": "Point",
-                "coordinates": [r["lon"], r["lat"]],
+                "coordinates": [row.lon, row.lat],
             },
             "properties": {
-                "operator": r["operator"],
-                "stop_id": r["stop_id"],
-                "stop_name": r["stop_name"],
-                "departures": r["departures"],
-                "departures_per_hour": r["departures_per_hour"],
+                "operator": row.operator,
+                "stop_id": row.stop_id,
+                "stop_name": row.stop_name,
+                "departures": row.departures,
+                "departures_per_hour": row.departures_per_hour,
             },
         })
 
@@ -221,58 +212,59 @@ async def get_frequency_geojson(
 
 
 @router.get("/municipalities/geojson")
-async def get_municipalities_socio_geojson(
+def get_municipalities_socio_geojson(
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> dict:
     """Return municipalities as GeoJSON with sociodemographic properties for choropleth."""
-    result = await db.execute(
-        text("""
-            WITH latest_demo AS (
-                SELECT DISTINCT ON (muni_code)
-                    muni_code, pop_total, pct_0_17, pct_18_25, pct_65_plus
-                FROM municipality_demographics ORDER BY muni_code, year DESC
-            ),
-            latest_income AS (
-                SELECT DISTINCT ON (muni_code) muni_code, renta_index
-                FROM municipality_income ORDER BY muni_code, year DESC
-            ),
-            latest_cars AS (
-                SELECT DISTINCT ON (muni_code) muni_code, vehicles_per_inhab
-                FROM municipality_car_ownership ORDER BY muni_code, year DESC
-            ),
-            muni_scores AS (
-                SELECT m.muni_code,
-                       CASE WHEN SUM(g.population) > 0
-                           THEN SUM(cs.combined_score_normalized * g.population) / SUM(g.population)
-                           ELSE AVG(cs.combined_score_normalized)
-                       END AS weighted_avg_score
-                FROM municipalities m
-                JOIN grid_cells g ON g.tenant_id = m.tenant_id AND ST_Intersects(g.centroid, m.geom)
-                LEFT JOIN combined_scores cs ON cs.cell_id = g.id AND cs.tenant_id = g.tenant_id
-                    AND cs.departure_time = '08:00'
-                WHERE m.tenant_id = :tenant_id
-                GROUP BY m.muni_code
-            )
-            SELECT m.muni_code, m.name,
-                   ST_AsGeoJSON(m.geom)::json AS geometry,
-                   ms.weighted_avg_score,
-                   d.pop_total, d.pct_0_17, d.pct_18_25, d.pct_65_plus,
-                   i.renta_index,
-                   c.vehicles_per_inhab
+    # DuckDB supports DISTINCT ON same as PostgreSQL.
+    result = db.execute(
+        """
+        WITH latest_demo AS (
+            SELECT DISTINCT ON (muni_code)
+                muni_code, pop_total, pct_0_17, pct_18_25, pct_65_plus
+            FROM municipality_demographics ORDER BY muni_code, year DESC
+        ),
+        latest_income AS (
+            SELECT DISTINCT ON (muni_code) muni_code, renta_index
+            FROM municipality_income ORDER BY muni_code, year DESC
+        ),
+        latest_cars AS (
+            SELECT DISTINCT ON (muni_code) muni_code, vehicles_per_inhab
+            FROM municipality_car_ownership ORDER BY muni_code, year DESC
+        ),
+        muni_scores AS (
+            SELECT m.muni_code,
+                   CASE WHEN SUM(g.population) > 0
+                       THEN SUM(cs.combined_score_normalized * g.population) / SUM(g.population)
+                       ELSE AVG(cs.combined_score_normalized)
+                   END AS weighted_avg_score
             FROM municipalities m
-            LEFT JOIN muni_scores ms ON ms.muni_code = m.muni_code
-            LEFT JOIN latest_demo d ON d.muni_code = m.muni_code
-            LEFT JOIN latest_income i ON i.muni_code = m.muni_code
-            LEFT JOIN latest_cars c ON c.muni_code = m.muni_code
-            WHERE m.tenant_id = :tenant_id
-        """),
+            JOIN grid_cells g ON g.tenant_id = m.tenant_id AND ST_Intersects(g.centroid, m.geom)
+            LEFT JOIN combined_scores cs ON cs.cell_id = g.id AND cs.tenant_id = g.tenant_id
+                AND cs.departure_time = '08:00'
+            WHERE m.tenant_id = $tenant_id
+            GROUP BY m.muni_code
+        )
+        SELECT m.muni_code, m.name,
+               ST_AsGeoJSON(m.geom) AS geometry,
+               ms.weighted_avg_score,
+               d.pop_total, d.pct_0_17, d.pct_18_25, d.pct_65_plus,
+               i.renta_index,
+               c.vehicles_per_inhab
+        FROM municipalities m
+        LEFT JOIN muni_scores ms ON ms.muni_code = m.muni_code
+        LEFT JOIN latest_demo d ON d.muni_code = m.muni_code
+        LEFT JOIN latest_income i ON i.muni_code = m.muni_code
+        LEFT JOIN latest_cars c ON c.muni_code = m.muni_code
+        WHERE m.tenant_id = $tenant_id
+        """,
         {"tenant_id": tenant.tenant_id},
     )
 
-    rows = [row._mapping for row in result]
+    rows = [row._mapping for row in result.fetchall()]
 
-    # --- Min-max normalization (same approach as frontend context page) ---
+    # Min-max normalization for vulnerability index
     complete = [
         r for r in rows
         if all(r[k] is not None for k in ["weighted_avg_score", "pct_65_plus", "renta_index", "vehicles_per_inhab"])
@@ -311,7 +303,7 @@ async def get_municipalities_socio_geojson(
 
         features.append({
             "type": "Feature",
-            "geometry": r["geometry"],
+            "geometry": json.loads(r["geometry"]) if r["geometry"] else None,
             "properties": {
                 "muni_code": r["muni_code"],
                 "name": r["name"],
@@ -330,64 +322,60 @@ async def get_municipalities_socio_geojson(
 
 
 @router.get("/profiles", response_model=list[MunicipalitySocioProfile])
-async def get_socio_profiles(
+def get_socio_profiles(
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalitySocioProfile]:
-    """Return combined sociodemographic + connectivity profile per municipality.
-
-    Joins demographics, income, car ownership, and connectivity scores
-    using the latest available year for each dataset.
-    """
-    result = await db.execute(
-        text("""
-            WITH latest_demo AS (
-                SELECT DISTINCT ON (muni_code)
-                    muni_code, pop_total, pop_0_17, pop_18_25, pop_65_plus,
-                    pct_0_17, pct_18_25, pct_65_plus
-                FROM municipality_demographics
-                ORDER BY muni_code, year DESC
-            ),
-            latest_income AS (
-                SELECT DISTINCT ON (muni_code)
-                    muni_code, renta_personal_media, renta_disponible_media, renta_index
-                FROM municipality_income
-                ORDER BY muni_code, year DESC
-            ),
-            latest_cars AS (
-                SELECT DISTINCT ON (muni_code)
-                    muni_code, vehicles_per_inhab
-                FROM municipality_car_ownership
-                ORDER BY muni_code, year DESC
-            ),
-            muni_scores AS (
-                SELECT m.muni_code, m.name,
-                       SUM(g.population) AS population,
-                       CASE WHEN SUM(g.population) > 0
-                           THEN SUM(cs.combined_score_normalized * g.population) / SUM(g.population)
-                           ELSE AVG(cs.combined_score_normalized)
-                       END AS weighted_avg_score
-                FROM municipalities m
-                JOIN grid_cells g ON g.tenant_id = m.tenant_id
-                    AND ST_Intersects(g.centroid, m.geom)
-                LEFT JOIN combined_scores cs ON cs.cell_id = g.id
-                    AND cs.tenant_id = g.tenant_id
-                    AND cs.departure_time = '08:00'
-                WHERE m.tenant_id = :tenant_id
-                GROUP BY m.muni_code, m.name
-            )
-            SELECT ms.muni_code, ms.name, ms.population, ms.weighted_avg_score,
-                   d.pop_total, d.pop_0_17, d.pop_18_25, d.pop_65_plus,
-                   d.pct_0_17, d.pct_18_25, d.pct_65_plus,
-                   i.renta_personal_media, i.renta_disponible_media, i.renta_index,
-                   c.vehicles_per_inhab
-            FROM muni_scores ms
-            LEFT JOIN latest_demo d ON d.muni_code = ms.muni_code
-            LEFT JOIN latest_income i ON i.muni_code = ms.muni_code
-            LEFT JOIN latest_cars c ON c.muni_code = ms.muni_code
-            ORDER BY ms.population DESC NULLS LAST
-        """),
+    """Return combined sociodemographic + connectivity profile per municipality."""
+    result = db.execute(
+        """
+        WITH latest_demo AS (
+            SELECT DISTINCT ON (muni_code)
+                muni_code, pop_total, pop_0_17, pop_18_25, pop_65_plus,
+                pct_0_17, pct_18_25, pct_65_plus
+            FROM municipality_demographics
+            ORDER BY muni_code, year DESC
+        ),
+        latest_income AS (
+            SELECT DISTINCT ON (muni_code)
+                muni_code, renta_personal_media, renta_disponible_media, renta_index
+            FROM municipality_income
+            ORDER BY muni_code, year DESC
+        ),
+        latest_cars AS (
+            SELECT DISTINCT ON (muni_code)
+                muni_code, vehicles_per_inhab
+            FROM municipality_car_ownership
+            ORDER BY muni_code, year DESC
+        ),
+        muni_scores AS (
+            SELECT m.muni_code, m.name,
+                   SUM(g.population) AS population,
+                   CASE WHEN SUM(g.population) > 0
+                       THEN SUM(cs.combined_score_normalized * g.population) / SUM(g.population)
+                       ELSE AVG(cs.combined_score_normalized)
+                   END AS weighted_avg_score
+            FROM municipalities m
+            JOIN grid_cells g ON g.tenant_id = m.tenant_id
+                AND ST_Intersects(g.centroid, m.geom)
+            LEFT JOIN combined_scores cs ON cs.cell_id = g.id
+                AND cs.tenant_id = g.tenant_id
+                AND cs.departure_time = '08:00'
+            WHERE m.tenant_id = $tenant_id
+            GROUP BY m.muni_code, m.name
+        )
+        SELECT ms.muni_code, ms.name, ms.population, ms.weighted_avg_score,
+               d.pop_total, d.pop_0_17, d.pop_18_25, d.pop_65_plus,
+               d.pct_0_17, d.pct_18_25, d.pct_65_plus,
+               i.renta_personal_media, i.renta_disponible_media, i.renta_index,
+               c.vehicles_per_inhab
+        FROM muni_scores ms
+        LEFT JOIN latest_demo d ON d.muni_code = ms.muni_code
+        LEFT JOIN latest_income i ON i.muni_code = ms.muni_code
+        LEFT JOIN latest_cars c ON c.muni_code = ms.muni_code
+        ORDER BY ms.population DESC NULLS LAST
+        """,
         {"tenant_id": tenant.tenant_id},
     )
 
-    return [MunicipalitySocioProfile(**dict(row._mapping)) for row in result]
+    return [MunicipalitySocioProfile(**row._mapping) for row in result.fetchall()]

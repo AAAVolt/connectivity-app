@@ -6,13 +6,11 @@ from enum import Enum
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas import CellResponse, CellScoreDetail
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
-from backend.db import get_db
+from backend.db import DuckDBSession, get_db
 
 router = APIRouter(prefix="/cells", tags=["cells"])
 
@@ -22,7 +20,6 @@ ALLOWED_RESOLUTIONS = (250, 500, 1000)
 
 
 class TransportMode(str, Enum):
-    WALK = "WALK"
     TRANSIT = "TRANSIT"
 
 
@@ -58,11 +55,9 @@ def _build_base_query(
     metric: Metric,
     params: dict[str, object],
 ) -> str:
-    """Return SQL selecting ``(id, cell_code, population, score, geom)`` per 250 m cell.
+    """Return SQL selecting (id, cell_code, population, score, geom) per 250 m cell.
 
-    Mutates *params* to add bind variables for the chosen filters.
-    The returned query uses raw ``gc.geom`` (not GeoJSON) so the caller
-    can either convert directly or aggregate before converting.
+    Uses $-prefixed named parameters for DuckDB.
     """
     if metric == Metric.travel_time and mode is not None and purpose is not None:
         params["mode"] = mode.value
@@ -73,9 +68,9 @@ def _build_base_query(
             FROM grid_cells gc
             LEFT JOIN min_travel_times mt
                 ON mt.cell_id = gc.id AND mt.tenant_id = gc.tenant_id
-                AND mt.mode = :mode AND mt.purpose = :purpose
-                AND mt.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
+                AND mt.mode = $mode AND mt.purpose = $purpose
+                AND mt.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
         """
 
     if metric == Metric.travel_time and purpose is not None:
@@ -86,9 +81,9 @@ def _build_base_query(
             FROM grid_cells gc
             LEFT JOIN min_travel_times mt
                 ON mt.cell_id = gc.id AND mt.tenant_id = gc.tenant_id
-                AND mt.purpose = :purpose
-                AND mt.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
+                AND mt.purpose = $purpose
+                AND mt.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
             GROUP BY gc.id, gc.cell_code, gc.population, gc.geom
         """
 
@@ -100,9 +95,9 @@ def _build_base_query(
             FROM grid_cells gc
             LEFT JOIN min_travel_times mt
                 ON mt.cell_id = gc.id AND mt.tenant_id = gc.tenant_id
-                AND mt.mode = :mode
-                AND mt.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
+                AND mt.mode = $mode
+                AND mt.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
             GROUP BY gc.id, gc.cell_code, gc.population, gc.geom
         """
 
@@ -113,8 +108,8 @@ def _build_base_query(
             FROM grid_cells gc
             LEFT JOIN min_travel_times mt
                 ON mt.cell_id = gc.id AND mt.tenant_id = gc.tenant_id
-                AND mt.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
+                AND mt.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
             GROUP BY gc.id, gc.cell_code, gc.population, gc.geom
         """
 
@@ -127,9 +122,9 @@ def _build_base_query(
             FROM grid_cells gc
             LEFT JOIN connectivity_scores cs
                 ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
-                AND cs.mode = :mode AND cs.purpose = :purpose
-                AND cs.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
+                AND cs.mode = $mode AND cs.purpose = $purpose
+                AND cs.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
         """
 
     if mode is not None:
@@ -140,9 +135,9 @@ def _build_base_query(
             FROM grid_cells gc
             LEFT JOIN connectivity_scores cs
                 ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
-                AND cs.mode = :mode
-                AND cs.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
+                AND cs.mode = $mode
+                AND cs.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
             GROUP BY gc.id, gc.cell_code, gc.population, gc.geom
         """
 
@@ -154,9 +149,9 @@ def _build_base_query(
             FROM grid_cells gc
             LEFT JOIN connectivity_scores cs
                 ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
-                AND cs.purpose = :purpose
-                AND cs.departure_time = :dep_time
-            WHERE gc.tenant_id = :tid
+                AND cs.purpose = $purpose
+                AND cs.departure_time = $dep_time
+            WHERE gc.tenant_id = $tid
             GROUP BY gc.id, gc.cell_code, gc.population, gc.geom
         """
 
@@ -166,20 +161,21 @@ def _build_base_query(
         FROM grid_cells gc
         LEFT JOIN combined_scores cs
             ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
-            AND cs.departure_time = :dep_time
-        WHERE gc.tenant_id = :tid
+            AND cs.departure_time = $dep_time
+        WHERE gc.tenant_id = $tid
     """
 
 
-# Aggregation wrapper – groups 250 m cells into a coarser resolution.
-# Uses population-weighted averaging for scores; falls back to simple
-# AVG when all population in a group is zero.
-# The {base_sql} placeholder is replaced at call-time.
+# Aggregation wrapper — groups 250 m cells into a coarser resolution.
+# Uses population-weighted averaging; falls back to simple AVG when
+# all population in a group is zero.
+# DuckDB uses regexp_extract instead of substring(...FROM...) and
+# computes bbox via MIN/MAX of coordinate extents.
 _AGGREGATE_SQL = """
     WITH base AS ({base_sql})
     SELECT
-        'E' || (floor(substring(cell_code FROM 'E(\\d+)_N')::int / :res) * :res)::int
-        || '_N' || (floor(substring(cell_code FROM '_N(\\d+)')::int / :res) * :res)::int
+        'E' || (floor(CAST(regexp_extract(cell_code, 'E(\\d+)_N', 1) AS INTEGER) / $res) * $res)::INTEGER
+        || '_N' || (floor(CAST(regexp_extract(cell_code, '_N(\\d+)', 1) AS INTEGER) / $res) * $res)::INTEGER
         AS cell_code,
         SUM(population) AS population,
         COALESCE(
@@ -187,11 +183,16 @@ _AGGREGATE_SQL = """
             / NULLIF(SUM(CASE WHEN score IS NOT NULL THEN population END), 0),
             AVG(score)
         ) AS score,
-        ST_AsGeoJSON(ST_Envelope(ST_Collect(geom)))::json AS geometry
+        ST_AsGeoJSON(
+            ST_MakeEnvelope(
+                MIN(ST_XMin(geom)), MIN(ST_YMin(geom)),
+                MAX(ST_XMax(geom)), MAX(ST_YMax(geom))
+            )
+        ) AS geometry
     FROM base
     GROUP BY
-        floor(substring(cell_code FROM 'E(\\d+)_N')::int / :res),
-        floor(substring(cell_code FROM '_N(\\d+)')::int / :res)
+        floor(CAST(regexp_extract(cell_code, 'E(\\d+)_N', 1) AS INTEGER) / $res),
+        floor(CAST(regexp_extract(cell_code, '_N(\\d+)', 1) AS INTEGER) / $res)
 """
 
 
@@ -201,25 +202,25 @@ _AGGREGATE_SQL = """
 
 
 @router.get("/departure-times")
-async def get_available_departure_times(
+def get_available_departure_times(
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> list[str]:
     """Return sorted list of departure_time slots that have computed scores."""
-    result = await db.execute(
-        text("""
-            SELECT DISTINCT departure_time
-            FROM connectivity_scores
-            WHERE tenant_id = :tid
-            ORDER BY departure_time
-        """),
+    result = db.execute(
+        """
+        SELECT DISTINCT departure_time
+        FROM connectivity_scores
+        WHERE tenant_id = $tid
+        ORDER BY departure_time
+        """,
         {"tid": tenant.tenant_id},
     )
     return [row[0] for row in result.fetchall()]
 
 
 @router.get("/geojson", response_class=Response)
-async def get_cells_geojson(
+def get_cells_geojson(
     mode: TransportMode | None = Query(None, description="Filter by transport mode"),
     purpose: str | None = Query(None, description="Filter by destination purpose (e.g. hospital, bachiller)"),
     metric: Metric = Query(Metric.score, description="Metric to return: score or travel_time"),
@@ -229,20 +230,9 @@ async def get_cells_geojson(
         description="Departure time of day (HH:MM, 30-min intervals)",
     ),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> Response:
-    """Return grid cells as GeoJSON with scores or min travel times.
-
-    *resolution* controls the grid cell size returned:
-
-    - **250** (default): base 250 m cells.
-    - **500**: 500 m cells (2x2 base cells, population-weighted scores).
-    - **1000**: 1 km cells (4x4 base cells, population-weighted scores).
-
-    departure_time selects which time-of-day slot to display (e.g. "08:00").
-    metric=score (default): accessibility score (0-100).
-    metric=travel_time: minutes to nearest destination of that purpose.
-    """
+    """Return grid cells as GeoJSON with scores or min travel times."""
     if resolution not in ALLOWED_RESOLUTIONS:
         raise HTTPException(
             status_code=400,
@@ -256,14 +246,14 @@ async def get_cells_geojson(
     if resolution == 250:
         sql = f"""
             SELECT id, cell_code, population, score,
-                   ST_AsGeoJSON(geom)::json AS geometry
+                   ST_AsGeoJSON(geom) AS geometry
             FROM ({base_sql}) AS base
         """
     else:
         params["res"] = resolution
         sql = _AGGREGATE_SQL.format(base_sql=base_sql)
 
-    result = await db.execute(text(sql), params)
+    result = db.execute(sql, params)
     rows = result.fetchall()
 
     features = []
@@ -278,7 +268,7 @@ async def get_cells_geojson(
         features.append({
             "type": "Feature",
             "properties": props,
-            "geometry": row.geometry,
+            "geometry": json.loads(row.geometry) if row.geometry else None,
         })
 
     geojson = {"type": "FeatureCollection", "features": features}
@@ -289,28 +279,28 @@ async def get_cells_geojson(
 
 
 @router.get("/{cell_id}", response_model=CellResponse)
-async def get_cell(
+def get_cell(
     cell_id: int,
     departure_time: str = Query(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time of day (HH:MM)",
     ),
     tenant: TenantContext = Depends(get_tenant),
-    db: AsyncSession = Depends(get_db),
+    db: DuckDBSession = Depends(get_db),
 ) -> CellResponse:
     """Return cell info, connectivity scores, and combined score."""
     dep_time = _validate_departure_time(departure_time)
 
-    result = await db.execute(
-        text("""
-            SELECT gc.id, gc.cell_code, gc.population,
-                   cs.combined_score, cs.combined_score_normalized
-            FROM grid_cells gc
-            LEFT JOIN combined_scores cs
-                ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
-                AND cs.departure_time = :dep_time
-            WHERE gc.id = :cell_id AND gc.tenant_id = :tid
-        """),
+    result = db.execute(
+        """
+        SELECT gc.id, gc.cell_code, gc.population,
+               cs.combined_score, cs.combined_score_normalized
+        FROM grid_cells gc
+        LEFT JOIN combined_scores cs
+            ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
+            AND cs.departure_time = $dep_time
+        WHERE gc.id = $cell_id AND gc.tenant_id = $tid
+        """,
         {"cell_id": cell_id, "tid": tenant.tenant_id, "dep_time": dep_time},
     )
     row = result.one_or_none()
@@ -318,14 +308,14 @@ async def get_cell(
     if row is None:
         raise HTTPException(status_code=404, detail="Cell not found")
 
-    scores_result = await db.execute(
-        text("""
-            SELECT mode, purpose, score, score_normalized
-            FROM connectivity_scores
-            WHERE cell_id = :cell_id AND tenant_id = :tid
-                AND departure_time = :dep_time
-            ORDER BY mode, purpose
-        """),
+    scores_result = db.execute(
+        """
+        SELECT mode, purpose, score, score_normalized
+        FROM connectivity_scores
+        WHERE cell_id = $cell_id AND tenant_id = $tid
+            AND departure_time = $dep_time
+        ORDER BY mode, purpose
+        """,
         {"cell_id": cell_id, "tid": tenant.tenant_id, "dep_time": dep_time},
     )
 

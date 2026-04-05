@@ -6,10 +6,10 @@ from pydantic_settings import BaseSettings
 
 
 class WorkerSettings(BaseSettings):
-    database_url: str = (
-        "postgresql+psycopg2://bizkaia:bizkaia_local@localhost:5432/bizkaia"
-    )
     data_dir: str = "/data"
+    serving_dir: str = "/data/serving"
+    gcs_bucket: str = "bizkaia-conn-data"
+    gcs_prefix: str = "serving"
     environment: str = "local"
 
     model_config = {"env_prefix": "", "case_sensitive": False}

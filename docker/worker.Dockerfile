@@ -1,3 +1,4 @@
+# Worker image – DuckDB/GeoPandas-based, no PostGIS.
 # Build context: repo root (.)
 FROM python:3.11-slim AS base
 
