@@ -28,6 +28,7 @@ ROUTE_TYPE_COLORS: dict[int, str] = {
 @router.get("/stops", response_class=Response)
 def get_transit_stops(
     operator: str | None = Query(None, description="Filter by operator name"),
+    limit: int = Query(5000, ge=1, le=10000, description="Max results"),
     db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return transit stops as GeoJSON from imported GTFS data."""
@@ -43,12 +44,14 @@ def get_transit_stops(
         where = "AND operator = $operator"
         params["operator"] = operator
 
+    params["lim"] = limit
     result = db.execute(
         f"""
         SELECT id, operator, stop_id, stop_name,
                ST_AsGeoJSON(geom) AS geometry
         FROM gtfs_stops
         WHERE 1=1 {where}
+        LIMIT $lim
         """,
         params,
     )
@@ -71,12 +74,14 @@ def get_transit_stops(
     return Response(
         content=json.dumps({"type": "FeatureCollection", "features": features}),
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
     )
 
 
 @router.get("/routes", response_class=Response)
 def get_transit_routes(
     operator: str | None = Query(None, description="Filter by operator name"),
+    limit: int = Query(2000, ge=1, le=5000, description="Max results"),
     db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return transit routes as GeoJSON from imported GTFS data."""
@@ -92,12 +97,14 @@ def get_transit_routes(
         where = "AND operator = $operator"
         params["operator"] = operator
 
+    params["lim"] = limit
     result = db.execute(
         f"""
         SELECT id, operator, route_id, route_name, route_type, route_color,
                ST_AsGeoJSON(geom) AS geometry
         FROM gtfs_routes
         WHERE geom IS NOT NULL {where}
+        LIMIT $lim
         """,
         params,
     )
@@ -122,6 +129,7 @@ def get_transit_routes(
     return Response(
         content=json.dumps({"type": "FeatureCollection", "features": features}),
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
     )
 
 

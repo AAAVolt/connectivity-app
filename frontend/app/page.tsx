@@ -1,7 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
+import { useState } from "react";
+import {
+  IconChartBar as BarChart3,
+  IconBuilding as Building2,
+  IconGauge as Gauge,
+  IconGrid3x3 as Grid3X3,
+  IconMap2 as MapIcon,
+  IconHourglass as Timer,
+  IconTrophy as Trophy,
+  IconUsers as Users,
+} from "@tabler/icons-react";
 import {
   BarChart,
   Bar,
@@ -24,12 +33,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { apiFetch } from "@/lib/api";
+import { TabButton } from "@/components/tab-button";
 import type {
   DashboardSummary,
   ScoreDistributionBucket,
   PurposeBreakdown,
   ServiceCoverage,
+  AreaDetail,
 } from "@/lib/api";
 import {
   KpiCard,
@@ -47,50 +57,14 @@ import {
 import type { AreaRanking } from "@/components/dashboard-charts";
 import type { MunicipalitySocioProfile } from "@/lib/api";
 import { useTranslation } from "@/lib/i18n";
+import { useDashboardData } from "@/hooks/use-dashboard-data";
+import { useAreaDetail } from "@/hooks/use-area-detail";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface AreaDetail {
-  name: string;
-  code: string;
-  cell_count: number;
-  population: number;
-  avg_score: number | null;
-  weighted_avg_score: number | null;
-  purpose_scores: PurposeBreakdown[];
-  service_coverage: ServiceCoverage[];
-}
-
 type Tab = "overview" | "comarcas" | "municipios";
-
-// ---------------------------------------------------------------------------
-// Tab button
-// ---------------------------------------------------------------------------
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-        active
-          ? "border-primary text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Comparison Bar Chart — area score vs Bizkaia average per POI
@@ -398,29 +372,9 @@ function AreaAnalysisPanel({
 }) {
   const { t } = useTranslation();
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
-  const [detail, setDetail] = useState<AreaDetail | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  const { data: detail, isLoading: loadingDetail } = useAreaDetail(areaType, selectedCode);
   const [selectedPurpose, setSelectedPurpose] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-
-  const loadDetail = useCallback(
-    async (code: string) => {
-      setLoadingDetail(true);
-      setSelectedPurpose(null);
-      try {
-        const result = await apiFetch<AreaDetail>(
-          `/dashboard/${areaType}/${code}?departure_time=08:00`,
-        );
-        setDetail(result);
-        setSelectedCode(code);
-      } catch {
-        setDetail(null);
-      } finally {
-        setLoadingDetail(false);
-      }
-    },
-    [areaType],
-  );
 
   const filtered = search
     ? areas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))
@@ -456,7 +410,7 @@ function AreaAnalysisPanel({
             return (
               <button
                 key={a.code}
-                onClick={() => loadDetail(a.code)}
+                onClick={() => { setSelectedCode(a.code); setSelectedPurpose(null); }}
                 className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
                   selectedCode === a.code
                     ? "border-primary bg-primary/5 text-foreground"
@@ -489,6 +443,7 @@ function AreaAnalysisPanel({
               <KpiCard
                 title={t("kpi.population")}
                 value={fmtPop(detail.population)}
+                icon={Users}
               />
               <KpiCard
                 title={t("kpi.connectivityScore")}
@@ -496,14 +451,17 @@ function AreaAnalysisPanel({
                 subtitle={`${t("kpi.bizkaiaAvg")} ${fmt(
                   areas.reduce((s, a) => s + (a.weighted_avg_score ?? 0), 0) / areas.length,
                 )}`}
+                icon={Gauge}
               />
               <KpiCard
                 title={t("kpi.gridCells")}
                 value={detail.cell_count.toLocaleString()}
+                icon={Grid3X3}
               />
               <KpiCard
                 title={t("kpi.ranking")}
                 value={`${areas.findIndex((a) => a.code === detail.code) + 1} / ${areas.length}`}
+                icon={Trophy}
               />
             </div>
             <KeyFindings
@@ -728,21 +686,25 @@ function OverviewTab({
           title={t("kpi.totalPopulation")}
           value={fmtPop(s.total_population)}
           subtitle={`${fmtPop(s.populated_cells)} ${t("kpi.populatedCells")}`}
+          icon={Users}
         />
         <KpiCard
           title={t("kpi.weightedAvgScore")}
           value={`${fmt(s.weighted_avg_score)}/100`}
           subtitle={`${t("kpi.median")} ${fmt(s.median_score)}`}
+          icon={Gauge}
         />
         <KpiCard
           title={t("kpi.destinationsMapped")}
           value={s.destination_count.toLocaleString()}
           subtitle={`${s.transit_route_count} ${t("kpi.transitRoutes")}`}
+          icon={Grid3X3}
         />
         <KpiCard
           title={t("kpi.transitStops")}
           value={s.transit_stop_count.toLocaleString()}
           subtitle={`${s.total_cells.toLocaleString()} ${t("kpi.gridCells").toLowerCase()}`}
+          icon={Timer}
         />
       </div>
 
@@ -1162,9 +1124,9 @@ function OverviewTab({
                     />
                     {/* Reference lines for averages */}
                     <Scatter data={scatterData}>
-                      {scatterData.map((d, i) => (
+                      {scatterData.map((d) => (
                         <RCell
-                          key={i}
+                          key={d.name}
                           fill={
                             d.x < avgX && d.y < avgScore ? "#dc2626" :  // low income + low conn = red
                             d.x >= avgX && d.y >= avgScore ? "#22c55e" : // high both = green
@@ -1405,94 +1367,47 @@ function OverviewTab({
 export default function DashboardPage() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("overview");
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [distribution, setDistribution] = useState<ScoreDistributionBucket[]>([]);
-  const [purposes, setPurposes] = useState<PurposeBreakdown[]>([]);
-  const [comarcas, setComarcas] = useState<AreaRanking[]>([]);
-  const [municipalities, setMunicipalities] = useState<AreaRanking[]>([]);
-  const [coverage, setCoverage] = useState<ServiceCoverage[]>([]);
-  const [socioProfiles, setSocioProfiles] = useState<MunicipalitySocioProfile[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, isLoading, error, refetch } = useDashboardData();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [s, d, p, co, m, c, sp] = await Promise.all([
-        apiFetch<DashboardSummary>("/dashboard/summary?departure_time=08:00"),
-        apiFetch<ScoreDistributionBucket[]>("/dashboard/score-distribution?departure_time=08:00"),
-        apiFetch<PurposeBreakdown[]>("/dashboard/purpose-breakdown?departure_time=08:00"),
-        apiFetch<AreaRanking[]>("/dashboard/comarca-ranking?departure_time=08:00"),
-        apiFetch<AreaRanking[]>("/dashboard/municipality-ranking?departure_time=08:00"),
-        apiFetch<ServiceCoverage[]>("/dashboard/service-coverage?departure_time=08:00"),
-        apiFetch<MunicipalitySocioProfile[]>("/sociodemographic/profiles").catch(() => [] as MunicipalitySocioProfile[]),
-      ]);
-      setSummary(s);
-      setDistribution(d);
-      setPurposes(p);
-      setComarcas(co);
-      setMunicipalities(m);
-      setCoverage(c);
-      setSocioProfiles(sp);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load data");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  if (loading) {
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-sm text-muted-foreground">{t("dash.loading")}</p>
+      <div className="flex h-full items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
       </div>
     );
   }
 
-  if (error) {
+  if (error || !data) {
     return (
       <div className="p-6 lg:p-8 w-full">
         <h1 className="text-lg font-semibold">{t("dash.error.title")}</h1>
-        <p className="mt-4 text-sm text-destructive">{error}</p>
-        <Button onClick={load} variant="outline" size="sm" className="mt-3">{t("dash.retry")}</Button>
+        <p className="mt-4 text-sm text-destructive">{error instanceof Error ? error.message : String(error)}</p>
+        <Button onClick={() => refetch()} variant="outline" size="sm" className="mt-3">{t("dash.retry")}</Button>
       </div>
     );
   }
 
-  const s = summary!;
+  const { summary: s, distribution, purposes, comarcas, municipalities, coverage, socioProfiles } = data;
 
   return (
     <div className="p-6 lg:p-8 w-full space-y-6">
       {/* Header */}
-      <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-lg font-semibold">{t("dash.title")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("dash.subtitle")}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href="/map">{t("dash.openMap")}</Link>
-          </Button>
-          <Button asChild variant="ghost" size="sm">
-            <Link href="/about">{t("dash.methodology")}</Link>
-          </Button>
-        </div>
+      <div>
+        <h1 className="text-lg font-semibold">{t("dash.title")}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {t("dash.subtitle")}
+        </p>
       </div>
 
       {/* Tabs */}
-      <div className="border-b flex gap-0">
-        <TabButton active={tab === "overview"} onClick={() => setTab("overview")}>
+      <div className="border-b flex gap-0 overflow-x-auto">
+        <TabButton active={tab === "overview"} onClick={() => setTab("overview")} icon={BarChart3}>
           {t("dash.tab.overview")}
         </TabButton>
-        <TabButton active={tab === "comarcas"} onClick={() => setTab("comarcas")}>
+        <TabButton active={tab === "comarcas"} onClick={() => setTab("comarcas")} icon={MapIcon}>
           {t("dash.tab.comarcas")} ({comarcas.length})
         </TabButton>
-        <TabButton active={tab === "municipios"} onClick={() => setTab("municipios")}>
+        <TabButton active={tab === "municipios"} onClick={() => setTab("municipios")} icon={Building2}>
           {t("dash.tab.municipios")} ({municipalities.length})
         </TabButton>
       </div>

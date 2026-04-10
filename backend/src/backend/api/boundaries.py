@@ -41,6 +41,7 @@ def get_region_boundary(
     return Response(
         content=json.dumps({"type": "FeatureCollection", "features": features}),
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
     )
 
 
@@ -73,6 +74,7 @@ def get_municipalities(
     return Response(
         content=json.dumps({"type": "FeatureCollection", "features": features}),
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
     )
 
 
@@ -105,6 +107,7 @@ def get_comarcas(
     return Response(
         content=json.dumps({"type": "FeatureCollection", "features": features}),
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
     )
 
 
@@ -153,4 +156,5 @@ def get_nucleos(
     return Response(
         content=json.dumps({"type": "FeatureCollection", "features": features}),
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
     )

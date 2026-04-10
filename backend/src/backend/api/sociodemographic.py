@@ -7,8 +7,10 @@ for the dashboard enrichment layer.
 from __future__ import annotations
 
 import json
+import threading
+import time
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
 from backend.api.cells import DEFAULT_DEPARTURE_TIME, _validate_departure_time
@@ -18,6 +20,17 @@ from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
 
 router = APIRouter(prefix="/sociodemographic", tags=["sociodemographic"])
+
+# ── Thread-safe in-memory result cache for expensive queries ──
+_result_cache: dict[str, tuple[float, object]] = {}
+_cache_lock = threading.Lock()
+_CACHE_TTL = 300  # 5 minutes
+
+
+def _clear_result_cache() -> None:
+    """Called by admin/reload to invalidate cached results."""
+    with _cache_lock:
+        _result_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +236,7 @@ def get_frequency_geojson(
 
 @router.get("/municipalities/geojson")
 def get_municipalities_socio_geojson(
+    response: Response,
     departure_time: str = Query(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time slot (HH:MM, 30-min intervals)",
@@ -231,6 +245,7 @@ def get_municipalities_socio_geojson(
     db: DuckDBSession = Depends(get_db),
 ) -> dict:
     """Return municipalities as GeoJSON with sociodemographic properties for choropleth."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     if not db.has_table("municipality_demographics"):
         return {"type": "FeatureCollection", "features": []}
     dep_time = _validate_departure_time(departure_time)
@@ -341,6 +356,7 @@ def get_municipalities_socio_geojson(
 
 @router.get("/profiles", response_model=list[MunicipalitySocioProfile])
 def get_socio_profiles(
+    response: Response,
     departure_time: str = Query(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time slot (HH:MM, 30-min intervals)",
@@ -349,6 +365,15 @@ def get_socio_profiles(
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalitySocioProfile]:
     """Return combined sociodemographic + connectivity profile per municipality."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
+
+    cache_key = f"profiles:{tenant.tenant_id}:{departure_time}"
+    with _cache_lock:
+        if cache_key in _result_cache:
+            cached_at, cached_data = _result_cache[cache_key]
+            if time.monotonic() - cached_at < _CACHE_TTL:
+                return cached_data  # type: ignore[return-value]
+
     if not db.has_table("municipality_demographics"):
         return []
     dep_time = _validate_departure_time(departure_time)
@@ -404,4 +429,7 @@ def get_socio_profiles(
         {"tenant_id": tenant.tenant_id, "dep_time": dep_time},
     )
 
-    return [MunicipalitySocioProfile(**row._mapping) for row in result.fetchall()]
+    profiles = [MunicipalitySocioProfile(**row._mapping) for row in result.fetchall()]
+    with _cache_lock:
+        _result_cache[cache_key] = (time.monotonic(), profiles)
+    return profiles

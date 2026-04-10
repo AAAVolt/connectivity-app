@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-secret-change-me"
     jwt_algorithm: str = "HS256"
     environment: str = "local"
+    cors_origins: str = "http://localhost:3000"
+    cors_origin_regex: str = r"https://bizkaia-.*\.(run\.app|vercel\.app)"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 

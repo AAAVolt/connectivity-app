@@ -76,20 +76,15 @@ describe("getResolution", () => {
     expect(getResolution(10.9)).toBe(500);
   });
 
-  it("returns 200 for high zoom", () => {
-    expect(getResolution(11)).toBe(200);
-    expect(getResolution(12)).toBe(200);
-    expect(getResolution(12.4)).toBe(200);
+  it("returns 250 for high zoom (11+)", () => {
+    expect(getResolution(11)).toBe(250);
+    expect(getResolution(12)).toBe(250);
+    expect(getResolution(14)).toBe(250);
+    expect(getResolution(18)).toBe(250);
   });
 
-  it("returns 100 for very high zoom", () => {
-    expect(getResolution(12.5)).toBe(100);
-    expect(getResolution(14)).toBe(100);
-    expect(getResolution(18)).toBe(100);
-  });
-
-  it("is monotonically decreasing with zoom", () => {
-    const zooms = [7, 9, 9.5, 10, 11, 12, 12.5, 14, 16];
+  it("is monotonically non-increasing with zoom", () => {
+    const zooms = [7, 9, 9.5, 10, 10.9, 11, 12, 14, 16];
     const resolutions = zooms.map(getResolution);
     for (let i = 1; i < resolutions.length; i++) {
       expect(resolutions[i]).toBeLessThanOrEqual(resolutions[i - 1]);
@@ -98,13 +93,14 @@ describe("getResolution", () => {
 });
 
 describe("is3DVisibleAtResolution", () => {
-  it("returns true for coarse grids (200m+)", () => {
+  it("returns true for coarse grids (250m+)", () => {
     expect(is3DVisibleAtResolution(1000)).toBe(true);
     expect(is3DVisibleAtResolution(500)).toBe(true);
-    expect(is3DVisibleAtResolution(200)).toBe(true);
+    expect(is3DVisibleAtResolution(250)).toBe(true);
   });
 
-  it("returns false for fine grids (<200m)", () => {
+  it("returns false for fine grids (<250m)", () => {
+    expect(is3DVisibleAtResolution(200)).toBe(false);
     expect(is3DVisibleAtResolution(100)).toBe(false);
   });
 });

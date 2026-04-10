@@ -64,4 +64,5 @@ def get_destinations_geojson(
     return Response(
         content=json.dumps(geojson),
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
     )

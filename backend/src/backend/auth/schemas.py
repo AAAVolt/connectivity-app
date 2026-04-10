@@ -6,9 +6,11 @@ from pydantic import BaseModel
 class TokenPayload(BaseModel):
     sub: str
     tenant_id: str
+    role: str = "viewer"
     exp: int | None = None
 
 
 class TenantContext(BaseModel):
     tenant_id: str
     user_id: str
+    role: str = "viewer"

@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useMemo, useState } from "react";
+import {
+  IconCashBanknote as Banknote,
+  IconCar as Car,
+  IconClock as Clock,
+  IconShieldExclamation as ShieldAlert,
+  IconUsers as Users,
+} from "@tabler/icons-react";
 import {
   BarChart,
   Bar,
@@ -23,24 +30,18 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { apiFetch } from "@/lib/api";
+import { TabButton } from "@/components/tab-button";
 import type { MunicipalitySocioProfile } from "@/lib/api";
 import { useTranslation } from "@/lib/i18n";
 import { fmt, fmtPop } from "@/components/dashboard-charts";
+import { useSocioProfiles, useFrequencyData } from "@/hooks/use-context-data";
+import type { FreqSummary } from "@/hooks/use-context-data";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 type Tab = "vulnerability" | "demographics" | "income" | "cars" | "frequency";
-
-interface FreqSummary {
-  operator: string;
-  stop_id: string;
-  stop_name: string | null;
-  departures: number;
-  departures_per_hour: number;
-}
 
 interface VulnProfile extends MunicipalitySocioProfile {
   vuln_score: number;
@@ -63,28 +64,24 @@ function computeVulnerability(profiles: MunicipalitySocioProfile[]): VulnProfile
 
   if (withData.length === 0) return [];
 
-  const maxElderly = Math.max(...withData.map((p) => p.pct_65_plus!));
-  const minElderly = Math.min(...withData.map((p) => p.pct_65_plus!));
-  const maxIncome = Math.max(...withData.map((p) => p.renta_index!));
-  const minIncome = Math.min(...withData.map((p) => p.renta_index!));
-  const maxCars = Math.max(...withData.map((p) => p.vehicles_per_inhab!));
-  const minCars = Math.min(...withData.map((p) => p.vehicles_per_inhab!));
-  const maxScore = Math.max(...withData.map((p) => p.weighted_avg_score!));
-  const minScore = Math.min(...withData.map((p) => p.weighted_avg_score!));
+  const maxElderly = Math.max(...withData.map((p) => p.pct_65_plus ?? 0));
+  const minElderly = Math.min(...withData.map((p) => p.pct_65_plus ?? 0));
+  const maxIncome = Math.max(...withData.map((p) => p.renta_index ?? 0));
+  const minIncome = Math.min(...withData.map((p) => p.renta_index ?? 0));
+  const maxCars = Math.max(...withData.map((p) => p.vehicles_per_inhab ?? 0));
+  const minCars = Math.min(...withData.map((p) => p.vehicles_per_inhab ?? 0));
+  const maxScore = Math.max(...withData.map((p) => p.weighted_avg_score ?? 0));
+  const minScore = Math.min(...withData.map((p) => p.weighted_avg_score ?? 0));
 
   const norm = (v: number, min: number, max: number) =>
     max > min ? (v - min) / (max - min) : 0;
 
   return withData
     .map((p) => {
-      // Low connectivity = vulnerable (invert: 1 - normalized)
-      const connVuln = 1 - norm(p.weighted_avg_score!, minScore, maxScore);
-      // High elderly = vulnerable
-      const elderlyVuln = norm(p.pct_65_plus!, minElderly, maxElderly);
-      // Low income = vulnerable (invert)
-      const incomeVuln = 1 - norm(p.renta_index!, minIncome, maxIncome);
-      // Low car ownership = vulnerable (invert)
-      const carsVuln = 1 - norm(p.vehicles_per_inhab!, minCars, maxCars);
+      const connVuln = 1 - norm(p.weighted_avg_score ?? 0, minScore, maxScore);
+      const elderlyVuln = norm(p.pct_65_plus ?? 0, minElderly, maxElderly);
+      const incomeVuln = 1 - norm(p.renta_index ?? 0, minIncome, maxIncome);
+      const carsVuln = 1 - norm(p.vehicles_per_inhab ?? 0, minCars, maxCars);
 
       // Weighted composite: connectivity 40%, elderly 20%, income 20%, cars 20%
       const vuln_score =
@@ -99,31 +96,16 @@ function computeVulnerability(profiles: MunicipalitySocioProfile[]): VulnProfile
 }
 
 // ---------------------------------------------------------------------------
-// Tab Button
+// Tab icon map
 // ---------------------------------------------------------------------------
 
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-        active
-          ? "border-primary text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+const TAB_ICONS: Record<string, typeof ShieldAlert> = {
+  vulnerability: ShieldAlert,
+  demographics: Users,
+  income: Banknote,
+  cars: Car,
+  frequency: Clock,
+};
 
 // ---------------------------------------------------------------------------
 // Vulnerability Tab
@@ -302,8 +284,8 @@ function VulnerabilityTab({ data }: { data: VulnProfile[] }) {
                   }}
                 />
                 <Bar dataKey="vuln_score" radius={[0, 3, 3, 0]}>
-                  {data.slice(0, 30).map((d, i) => (
-                    <Cell key={i} fill={vulnColor(d.vuln_level)} />
+                  {data.slice(0, 30).map((d) => (
+                    <Cell key={d.muni_code} fill={vulnColor(d.vuln_level)} />
                   ))}
                 </Bar>
               </BarChart>
@@ -444,9 +426,9 @@ function IncomeTab({ data }: { data: MunicipalitySocioProfile[] }) {
                   }}
                 />
                 <Bar dataKey="renta_index" radius={[0, 3, 3, 0]}>
-                  {withIncome.map((d, i) => (
+                  {withIncome.map((d) => (
                     <Cell
-                      key={i}
+                      key={d.muni_code}
                       fill={(d.renta_index ?? 0) < avgIndex ? "#ef4444" : "#3b82f6"}
                     />
                   ))}
@@ -549,9 +531,9 @@ function CarOwnershipTab({ data }: { data: MunicipalitySocioProfile[] }) {
                   }}
                 />
                 <Bar dataKey="vehicles_per_inhab" radius={[0, 3, 3, 0]}>
-                  {withCars.map((d, i) => (
+                  {withCars.map((d) => (
                     <Cell
-                      key={i}
+                      key={d.muni_code}
                       fill={(d.vehicles_per_inhab ?? 0) < avgCars ? "#ef4444" : "#3b82f6"}
                     />
                   ))}
@@ -607,8 +589,7 @@ function CarOwnershipTab({ data }: { data: MunicipalitySocioProfile[] }) {
 function FrequencyTab() {
   const { t } = useTranslation();
   const [window, setWindow] = useState("07:00-09:00");
-  const [freqData, setFreqData] = useState<FreqSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: freqData = [], isLoading: loading } = useFrequencyData(window);
 
   const windows = [
     "07:00-09:00",
@@ -618,34 +599,6 @@ function FrequencyTab() {
     "18:00-21:00",
     "06:00-22:00",
   ];
-
-  const loadFreq = useCallback(async (tw: string) => {
-    setLoading(true);
-    try {
-      const geo = await apiFetch<{
-        features: Array<{
-          properties: {
-            operator: string;
-            stop_id: string;
-            stop_name: string | null;
-            departures: number;
-            departures_per_hour: number;
-          };
-        }>;
-      }>(`/sociodemographic/frequency/geojson?time_window=${tw}&min_dph=0`);
-
-      const items: FreqSummary[] = geo.features.map((f) => f.properties);
-      setFreqData(items);
-    } catch {
-      setFreqData([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadFreq(window);
-  }, [window, loadFreq]);
 
   const avgDph =
     freqData.length > 0
@@ -793,35 +746,13 @@ function FrequencyTab() {
 export default function ContextPage() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("vulnerability");
-  const [profiles, setProfiles] = useState<MunicipalitySocioProfile[]>([]);
-  const [vulnData, setVulnData] = useState<VulnProfile[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data: profiles = [], isLoading, error, refetch } = useSocioProfiles();
+  const vulnData = useMemo(() => computeVulnerability(profiles), [profiles]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await apiFetch<MunicipalitySocioProfile[]>(
-        "/sociodemographic/profiles",
-      );
-      setProfiles(data);
-      setVulnData(computeVulnerability(data));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("ctx.error"));
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  if (loading) {
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-sm text-muted-foreground">{t("ctx.loading")}</p>
+      <div className="flex h-full items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
       </div>
     );
   }
@@ -830,8 +761,8 @@ export default function ContextPage() {
     return (
       <div className="p-6 lg:p-8 w-full">
         <h1 className="text-lg font-semibold">{t("ctx.title")}</h1>
-        <p className="mt-4 text-sm text-destructive">{error}</p>
-        <Button onClick={load} variant="outline" size="sm" className="mt-3">
+        <p className="mt-4 text-sm text-destructive">{error instanceof Error ? error.message : String(error)}</p>
+        <Button onClick={() => refetch()} variant="outline" size="sm" className="mt-3">
           {t("ctx.retry")}
         </Button>
       </div>
@@ -849,7 +780,7 @@ export default function ContextPage() {
       <div className="border-b flex gap-0 overflow-x-auto">
         {(["vulnerability", "demographics", "income", "cars", "frequency"] as Tab[]).map(
           (key) => (
-            <TabButton key={key} active={tab === key} onClick={() => setTab(key)}>
+            <TabButton key={key} active={tab === key} onClick={() => setTab(key)} icon={TAB_ICONS[key]}>
               {t(`ctx.tab.${key}`)}
             </TabButton>
           ),

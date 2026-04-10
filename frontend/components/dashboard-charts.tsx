@@ -1,5 +1,6 @@
 "use client";
 
+import type { TablerIcon as LucideIcon } from "@tabler/icons-react";
 import {
   BarChart,
   Bar,
@@ -65,15 +66,20 @@ export function KpiCard({
   title,
   value,
   subtitle,
+  icon: Icon,
 }: {
   title: string;
   value: string;
   subtitle?: string;
+  icon?: LucideIcon;
 }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardDescription>{title}</CardDescription>
+        <div className="flex items-center justify-between">
+          <CardDescription>{title}</CardDescription>
+          {Icon && <Icon className="size-4 text-muted-foreground/60" />}
+        </div>
         <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
       </CardHeader>
       {subtitle && (

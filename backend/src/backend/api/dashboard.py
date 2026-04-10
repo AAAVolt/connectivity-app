@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from backend.api.cells import DEFAULT_DEPARTURE_TIME, _validate_departure_time
@@ -96,6 +96,7 @@ class ServiceCoverage(BaseModel):
 
 @router.get("/summary", response_model=DashboardSummary)
 def get_summary(
+    response: Response,
     departure_time: str = Query(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time slot (HH:MM)",
@@ -104,6 +105,7 @@ def get_summary(
     db: DuckDBSession = Depends(get_db),
 ) -> DashboardSummary:
     """High-level KPIs for the dashboard header."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
     result = db.execute(
@@ -176,11 +178,13 @@ def get_summary(
 
 @router.get("/score-distribution", response_model=list[ScoreDistributionBucket])
 def get_score_distribution(
+    response: Response,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[ScoreDistributionBucket]:
     """Score distribution histogram (10 buckets, 0-100)."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
     result = db.execute(
@@ -235,11 +239,13 @@ def get_score_distribution(
 
 @router.get("/purpose-breakdown", response_model=list[PurposeBreakdown])
 def get_purpose_breakdown(
+    response: Response,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[PurposeBreakdown]:
     """Average scores and travel times broken down by mode and purpose."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
     dt_result = db.execute(
@@ -314,11 +320,13 @@ def get_purpose_breakdown(
 
 @router.get("/municipality-ranking", response_model=list[AreaRanking])
 def get_municipality_ranking(
+    response: Response,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[AreaRanking]:
     """Municipality-level aggregated connectivity scores (spatial join)."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
     result = db.execute(
@@ -365,11 +373,13 @@ def get_municipality_ranking(
 
 @router.get("/comarca-ranking", response_model=list[AreaRanking])
 def get_comarca_ranking(
+    response: Response,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[AreaRanking]:
     """Comarca-level aggregated connectivity scores (spatial join)."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
     result = db.execute(
@@ -416,11 +426,13 @@ def get_comarca_ranking(
 
 @router.get("/service-coverage", response_model=list[ServiceCoverage])
 def get_service_coverage(
+    response: Response,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[ServiceCoverage]:
     """Percentage of population within travel-time thresholds per service."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
     dt_result = db.execute(
@@ -497,6 +509,12 @@ class AreaDetail(BaseModel):
     service_coverage: list[ServiceCoverage]
 
 
+_ALLOWED_AREA_TABLES = {
+    "comarcas": "comarca_code",
+    "municipalities": "muni_code",
+}
+
+
 def _area_detail(
     *,
     table: str,
@@ -507,6 +525,9 @@ def _area_detail(
     db: DuckDBSession,
 ) -> AreaDetail:
     """Shared logic for comarca / municipality detail endpoints."""
+    if table not in _ALLOWED_AREA_TABLES or _ALLOWED_AREA_TABLES[table] != code_col:
+        raise ValueError(f"Invalid area table/column: {table}/{code_col}")
+
     dt_result = db.execute(
         "SELECT code, label FROM destination_types ORDER BY code"
     )

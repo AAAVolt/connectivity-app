@@ -1,13 +1,11 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useTranslation } from "@/lib/i18n";
 
 function MapLoading() {
-  const { t } = useTranslation();
   return (
-    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      {t("map.loading")}
+    <div className="flex h-full items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
     </div>
   );
 }

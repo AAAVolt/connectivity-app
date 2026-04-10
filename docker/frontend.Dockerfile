@@ -14,6 +14,7 @@ CMD ["pnpm", "dev", "--hostname", "0.0.0.0"]
 
 FROM deps AS builder
 COPY frontend/ .
+ENV NEXT_OUTPUT=standalone
 RUN pnpm build
 
 FROM base AS runner

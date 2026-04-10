@@ -126,6 +126,17 @@ export interface ServiceCoverage {
   median_travel_time: number | null;
 }
 
+export interface AreaDetail {
+  name: string;
+  code: string;
+  cell_count: number;
+  population: number;
+  avg_score: number | null;
+  weighted_avg_score: number | null;
+  purpose_scores: PurposeBreakdown[];
+  service_coverage: ServiceCoverage[];
+}
+
 // ── Dashboard API functions ──
 
 export function getDashboardSummary(

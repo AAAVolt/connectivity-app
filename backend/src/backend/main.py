@@ -4,7 +4,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.boundaries import router as boundaries_router
@@ -38,10 +38,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    settings = get_settings()
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000"],
-        allow_origin_regex=r"https://.*\.(run\.app|vercel\.app)",
+        allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+        allow_origin_regex=settings.cors_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -56,12 +57,21 @@ def create_app() -> FastAPI:
     application.include_router(stats_router)
     application.include_router(transit_router)
 
-    # Admin endpoint to hot-reload data from GCS (requires authentication)
+    # Admin endpoint to hot-reload data from GCS (requires admin role)
     @application.post("/admin/reload", tags=["admin"])
     def admin_reload(
         tenant: TenantContext = Depends(get_tenant),
     ) -> dict[str, str]:
+        if tenant.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin role required",
+            )
+        logger.info("Admin reload triggered by user=%s tenant=%s", tenant.user_id, tenant.tenant_id)
         reload_db()
+        # Invalidate server-side result caches after data reload
+        from backend.api.sociodemographic import _clear_result_cache
+        _clear_result_cache()
         return {"status": "reloaded"}
 
     return application

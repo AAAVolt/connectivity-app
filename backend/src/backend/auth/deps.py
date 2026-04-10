@@ -17,7 +17,7 @@ def get_tenant(
     """Extract tenant context from JWT or dev header."""
     if settings.environment == "local":
         tenant_id = x_tenant_id or DEMO_TENANT_ID
-        return TenantContext(tenant_id=tenant_id, user_id="dev-user")
+        return TenantContext(tenant_id=tenant_id, user_id="dev-user", role="admin")
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -37,4 +37,8 @@ def get_tenant(
             detail="Invalid token",
         ) from exc
 
-    return TenantContext(tenant_id=token_data.tenant_id, user_id=token_data.sub)
+    return TenantContext(
+        tenant_id=token_data.tenant_id,
+        user_id=token_data.sub,
+        role=token_data.role,
+    )
