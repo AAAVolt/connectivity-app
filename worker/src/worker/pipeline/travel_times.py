@@ -17,10 +17,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import geopandas as gpd
+import numpy as np
 import pandas as pd
 import structlog
 
 logger = structlog.get_logger()
+
+GRID_CRS = "EPSG:25830"  # projected CRS used for grid generation
 
 ALLOWED_MODES = frozenset({"TRANSIT"})
 MAX_TRAVEL_TIME = 120.0
@@ -68,6 +72,69 @@ def _find_travel_time_column(columns: list[str]) -> str | None:
     if "travel_time" in columns:
         return "travel_time"
     return None
+
+
+def _build_origin_id_remap(
+    serving_dir: Path,
+    input_dir: Path,
+    tenant_id: str,
+) -> dict[int, int] | None:
+    """Build a mapping from R5R origin IDs to current grid cell IDs.
+
+    R5R's from_id values come from the origins.csv exported before routing.
+    If the grid has been rebuilt since then, IDs won't match.  This function
+    maps old IDs to new ones by matching coordinates to grid cell_codes.
+
+    Returns None if no remapping is needed (IDs already match).
+    """
+    log = logger.bind(tenant_id=tenant_id)
+    grid_path = serving_dir / "grid_cells.parquet"
+    origins_path = input_dir.parent / "network" / "origins.csv"
+
+    if not grid_path.exists() or not origins_path.exists():
+        return None
+
+    grid = gpd.read_parquet(grid_path)
+    grid_tenant = grid[grid["tenant_id"] == tenant_id]
+    if grid_tenant.empty:
+        return None
+
+    origins = pd.read_csv(origins_path)
+    grid_ids = set(grid_tenant["id"])
+    origin_ids = set(origins["id"])
+
+    # Check if IDs already match
+    if origin_ids.issubset(grid_ids):
+        return None
+
+    log.info("origin_id_remap_building", grid_range=f"{min(grid_ids)}-{max(grid_ids)}",
+             origins_range=f"{min(origin_ids)}-{max(origin_ids)}")
+
+    # Convert origins (lon,lat in WGS84) to UTM cell_codes
+    origins_gdf = gpd.GeoDataFrame(
+        origins,
+        geometry=gpd.points_from_xy(origins["lon"], origins["lat"]),
+        crs="EPSG:4326",
+    ).to_crs(GRID_CRS)
+
+    # Snap each origin centroid to the 250m grid to derive cell_code
+    cell_size = 250
+    origins["cell_code"] = origins_gdf.geometry.apply(
+        lambda pt: f"E{int(np.floor(pt.x / cell_size) * cell_size)}_N{int(np.floor(pt.y / cell_size) * cell_size)}"
+    )
+
+    # Build cell_code -> new_id lookup from current grid
+    code_to_new_id = dict(zip(grid_tenant["cell_code"], grid_tenant["id"]))
+
+    # Build old_id -> new_id mapping
+    remap: dict[int, int] = {}
+    for _, row in origins.iterrows():
+        new_id = code_to_new_id.get(row["cell_code"])
+        if new_id is not None:
+            remap[int(row["id"])] = int(new_id)
+
+    log.info("origin_id_remap_complete", mapped=len(remap), total_origins=len(origins))
+    return remap if remap else None
 
 
 def import_travel_times(
@@ -221,6 +288,17 @@ def import_travel_times(
     # Write consolidated Parquet
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
+
+        # Remap R5R origin IDs to current grid IDs if they don't match
+        remap = _build_origin_id_remap(serving, input_dir, tenant_id)
+        if remap:
+            before_count = len(combined)
+            combined["origin_cell_id"] = combined["origin_cell_id"].map(remap)
+            combined = combined.dropna(subset=["origin_cell_id"])
+            combined["origin_cell_id"] = combined["origin_cell_id"].astype(int)
+            log.info("origin_ids_remapped",
+                     rows_before=before_count, rows_after=len(combined))
+
         out_path = serving / "travel_times.parquet"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         combined.to_parquet(out_path, index=False)

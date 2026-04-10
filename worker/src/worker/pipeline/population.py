@@ -137,9 +137,11 @@ def disaggregate_population(
     grid_proj["grid_idx"] = grid_proj.index
 
     # Spatial overlay to find intersecting pairs
+    grid_geom_col = grid_proj.geometry.name
+    pop_geom_col = pop_proj.geometry.name
     overlay = gpd.overlay(
-        grid_proj[["grid_idx", "id", "geometry"]],
-        pop_proj[["population", "masked_area", "geometry"]],
+        grid_proj[["grid_idx", "id", grid_geom_col]],
+        pop_proj[["population", "masked_area", pop_geom_col]],
         how="intersection",
         keep_geom_type=False,
     )

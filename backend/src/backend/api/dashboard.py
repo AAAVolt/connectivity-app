@@ -8,6 +8,7 @@ municipality/comarca rankings, and service coverage thresholds.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -136,9 +137,11 @@ def get_summary(
     def _safe_count(table: str, where: str = "") -> int:
         try:
             q = f"SELECT COUNT(*) AS c FROM {table}"
+            params: dict[str, Any] = {}
             if where:
                 q += f" WHERE {where}"
-            return db.execute(q, {"tid": tenant.tenant_id}).one().c
+                params["tid"] = tenant.tenant_id
+            return db.execute(q, params).one().c
         except (duckdb.CatalogException, duckdb.BinderException):
             # Table doesn't exist in this dataset — expected in minimal setups
             return 0

@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:3000"],
-        allow_origin_regex=r"https://.*\.run\.app",  # Cloud Run frontend
+        allow_origin_regex=r"https://.*\.(run\.app|vercel\.app)",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

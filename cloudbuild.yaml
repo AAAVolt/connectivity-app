@@ -1,0 +1,14 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'docker/cloudrun.Dockerfile'
+      - '-t'
+      - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
+      - '-t'
+      - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:latest'
+      - '.'
+images:
+  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
+  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:latest'

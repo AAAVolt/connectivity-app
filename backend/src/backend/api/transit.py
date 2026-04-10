@@ -31,6 +31,12 @@ def get_transit_stops(
     db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return transit stops as GeoJSON from imported GTFS data."""
+    if not db.has_table("gtfs_stops"):
+        return Response(
+            content='{"type":"FeatureCollection","features":[]}',
+            media_type="application/geo+json",
+        )
+
     params: dict[str, object] = {}
     where = ""
     if operator:
@@ -74,6 +80,12 @@ def get_transit_routes(
     db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return transit routes as GeoJSON from imported GTFS data."""
+    if not db.has_table("gtfs_routes"):
+        return Response(
+            content='{"type":"FeatureCollection","features":[]}',
+            media_type="application/geo+json",
+        )
+
     params: dict[str, object] = {}
     where = ""
     if operator:
@@ -118,6 +130,8 @@ def get_operators(
     db: DuckDBSession = Depends(get_db),
 ) -> list[dict[str, object]]:
     """List all imported transit operators with route/stop counts."""
+    if not db.has_table("gtfs_routes"):
+        return []
     result = db.execute("""
         SELECT
             r.operator,

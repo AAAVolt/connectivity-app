@@ -9,13 +9,11 @@ build/
 *.egg
 .venv/
 venv/
-poetry.lock
 
 # Node / Next.js
 node_modules/
 .next/
 out/
-pnpm-lock.yaml
 
 # R
 .Rhistory
@@ -43,13 +41,11 @@ Thumbs.db
 # Docker
 docker-compose.override.yml
 
-# Data (large files)
+# Data (large files – synced via GCS, see scripts/sync-data.sh)
 *.pbf
 *.osm
 *.gtfs.zip
 /data/
-!/data/serving/
-/data/serving/*.parquet
 
 # Test / Coverage
 .coverage

@@ -102,6 +102,8 @@ def get_demographics(
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityDemographics]:
     """Return age-group demographics per municipality."""
+    if not db.has_table("municipality_demographics"):
+        return []
     result = db.execute(
         """
         SELECT d.muni_code, COALESCE(m.name, d.muni_code) AS name,
@@ -126,6 +128,8 @@ def get_income(
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityIncome]:
     """Return income indicators per municipality."""
+    if not db.has_table("municipality_income"):
+        return []
     if year is None:
         yr_row = db.execute("SELECT MAX(year) FROM municipality_income")
         year = yr_row.scalar() or 2023
@@ -153,6 +157,8 @@ def get_car_ownership(
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityCarOwnership]:
     """Return car ownership rates per municipality."""
+    if not db.has_table("municipality_car_ownership"):
+        return []
     if year is None:
         yr_row = db.execute("SELECT MAX(year) FROM municipality_car_ownership")
         year = yr_row.scalar() or 2023
@@ -180,6 +186,8 @@ def get_frequency_geojson(
     tenant: TenantContext = Depends(get_tenant),
 ) -> FrequencyGeoJSON:
     """Return stop frequencies as GeoJSON for map overlay."""
+    if not db.has_table("stop_frequency"):
+        return FrequencyGeoJSON(type="FeatureCollection", features=[])
     result = db.execute(
         """
         SELECT operator, stop_id, stop_name, departures,
@@ -223,6 +231,8 @@ def get_municipalities_socio_geojson(
     db: DuckDBSession = Depends(get_db),
 ) -> dict:
     """Return municipalities as GeoJSON with sociodemographic properties for choropleth."""
+    if not db.has_table("municipality_demographics"):
+        return {"type": "FeatureCollection", "features": []}
     dep_time = _validate_departure_time(departure_time)
 
     # DuckDB supports DISTINCT ON same as PostgreSQL.
@@ -339,6 +349,8 @@ def get_socio_profiles(
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalitySocioProfile]:
     """Return combined sociodemographic + connectivity profile per municipality."""
+    if not db.has_table("municipality_demographics"):
+        return []
     dep_time = _validate_departure_time(departure_time)
 
     result = db.execute(

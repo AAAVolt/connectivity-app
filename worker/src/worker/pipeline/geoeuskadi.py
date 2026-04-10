@@ -19,7 +19,7 @@ import geopandas as gpd
 import httpx
 import pandas as pd
 import structlog
-from shapely.geometry import MultiLineString, MultiPolygon, Point, Polygon, shape
+from shapely.geometry import MultiLineString, MultiPolygon, Polygon, shape
 
 # Allow disabling SSL verification only when explicitly opted in (e.g. dev with
 # corporate proxy). Default is to verify certificates.
@@ -33,19 +33,6 @@ GEOEUSKADI_BASE = "https://www.geo.euskadi.eus/geoeuskadi/rest/services"
 
 # Municipalities: layer 10, filter by MUN_PROV='48' (Bizkaia)
 MUNICIPALITIES_URL = f"{GEOEUSKADI_BASE}/U11/LIMITES_CAS/MapServer/10/query"
-
-# Schools: layer 1
-SCHOOLS_URL = f"{GEOEUSKADI_BASE}/C06GIS/EDUCACION_CAS/MapServer/1/query"
-
-# Health: pharmacies (layer 121) + health centres (layer 9)
-PHARMACIES_URL = f"{GEOEUSKADI_BASE}/U11/SALUD_CAS/MapServer/121/query"
-HEALTH_CENTRES_URL = f"{GEOEUSKADI_BASE}/U11/SALUD_CAS/MapServer/9/query"
-
-# Supermarkets: layer 33 (grandes superficies / supermercados)
-SUPERMARKETS_URL = f"{GEOEUSKADI_BASE}/DGSGIS/EUSTAT_CAS/MapServer/33/query"
-
-# Economic activity areas: layer 7 (has geometry, unlike group layer 6)
-EMPLOYMENT_ZONES_URL = f"{GEOEUSKADI_BASE}/DGSGIS/EUSTAT_CAS/MapServer/7/query"
 
 # Bizkaia territory boundary: layer 7 (Territorio Historico)
 TERRITORY_URL = f"{GEOEUSKADI_BASE}/U11/LIMITES_CAS/MapServer/7/query"
@@ -71,11 +58,6 @@ DESTINATION_TYPES = [
     {"code": "osakidetza", "label": "Osakidetza", "description": "Osakidetza health service locations"},
     {"code": "residencia", "label": "Residencia", "description": "Residential care facilities"},
     {"code": "universidad", "label": "Universidad", "description": "Universities"},
-    # Legacy types kept for backward compatibility
-    {"code": "school_primary", "label": "School Primary", "description": "Primary schools"},
-    {"code": "health_gp", "label": "Health GP", "description": "GPs / health centres / pharmacies"},
-    {"code": "supermarket", "label": "Supermarket", "description": "Supermarkets"},
-    {"code": "jobs", "label": "Jobs", "description": "Employment zones"},
 ]
 
 
@@ -206,13 +188,6 @@ def seed_tenants_and_modes(serving_dir: str | Path) -> None:
     _write_parquet(dest_types_df, serving / "destination_types.parquet")
     log.info("destination_types_written", count=len(dest_types_df))
 
-
-def _dest_type_id(code: str) -> int:
-    """Look up a destination_type id by code from the static list."""
-    for i, dt in enumerate(DESTINATION_TYPES, start=1):
-        if dt["code"] == code:
-            return i
-    raise ValueError(f"Destination type '{code}' not found in DESTINATION_TYPES")
 
 
 # ── Boundary import ──
@@ -362,262 +337,3 @@ def import_comarcas(tenant_id: str, serving_dir: str | Path) -> int:
     return count
 
 
-# ── Destination imports ──
-
-
-def import_schools(tenant_id: str, serving_dir: str | Path) -> int:
-    """Import primary schools in Bizkaia from GeoEuskadi education service.
-
-    Appends to destinations.parquet.
-    """
-    serving = Path(serving_dir)
-    log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
-    log.info("schools_import_start")
-
-    type_id = _dest_type_id("school_primary")
-
-    # Query schools in Bizkaia
-    features = _query_all_features(
-        SCHOOLS_URL,
-        where="PROVINCIA='BIZKAIA' OR PROVINCIA='Bizkaia' OR PROV='48' OR TERRITORIO='48'",
-    )
-
-    if not features:
-        # Fallback: get all schools and filter by bbox
-        features = _query_all_features(SCHOOLS_URL)
-        features = _filter_bizkaia_bbox(features)
-
-    records: list[dict[str, Any]] = []
-    geometries: list[Point] = []
-
-    for f in features:
-        props = f.get("properties", {})
-        geom = f.get("geometry")
-        if not geom or geom.get("type") != "Point":
-            continue
-
-        coords = geom.get("coordinates", [])
-        if len(coords) < 2:
-            continue
-
-        name = props.get("NOMBRE", props.get("IZENA_NOMBRE", f"School {len(records) + 1}"))
-
-        records.append({
-            "tenant_id": tenant_id,
-            "type_id": type_id,
-            "name": name,
-            "weight": 1.0,
-            "metadata": json.dumps({
-                "source": "geoeuskadi",
-                "class": props.get("CLASE_CENTRO", ""),
-            }),
-        })
-        geometries.append(Point(coords[0], coords[1]))
-
-    count = len(records)
-    if records:
-        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
-        _append_destinations(gdf, serving)
-
-    log.info("schools_import_complete", count=count)
-    return count
-
-
-def import_health(tenant_id: str, serving_dir: str | Path) -> int:
-    """Import health centres and pharmacies in Bizkaia from GeoEuskadi."""
-    serving = Path(serving_dir)
-    log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
-    log.info("health_import_start")
-
-    type_id = _dest_type_id("health_gp")
-
-    all_features: list[dict[str, Any]] = []
-
-    # Health centres
-    centres = _query_all_features(HEALTH_CENTRES_URL)
-    centres = _filter_bizkaia_bbox(centres)
-    all_features.extend(centres)
-
-    # Pharmacies
-    pharmacies = _query_all_features(
-        PHARMACIES_URL,
-        where="PROVINCIA='BIZKAIA'",
-    )
-    all_features.extend(pharmacies)
-
-    records: list[dict[str, Any]] = []
-    geometries: list[Point] = []
-
-    for f in all_features:
-        props = f.get("properties", {})
-        geom = f.get("geometry")
-        if not geom or geom.get("type") != "Point":
-            continue
-
-        coords = geom.get("coordinates", [])
-        if len(coords) < 2:
-            continue
-
-        name = props.get("NOMBRE", props.get("TITULAR1", props.get("DENOM_C", f"Health {len(records) + 1}")))
-
-        records.append({
-            "tenant_id": tenant_id,
-            "type_id": type_id,
-            "name": name,
-            "weight": 1.0,
-            "metadata": json.dumps({"source": "geoeuskadi"}),
-        })
-        geometries.append(Point(coords[0], coords[1]))
-
-    count = len(records)
-    if records:
-        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
-        _append_destinations(gdf, serving)
-
-    log.info("health_import_complete", count=count)
-    return count
-
-
-def import_supermarkets(tenant_id: str, serving_dir: str | Path) -> int:
-    """Import supermarkets in Bizkaia from EUSTAT ArcGIS service."""
-    serving = Path(serving_dir)
-    log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
-    log.info("supermarkets_import_start")
-
-    type_id = _dest_type_id("supermarket")
-
-    features = _query_all_features(SUPERMARKETS_URL)
-    features = _filter_bizkaia_bbox(features)
-
-    records: list[dict[str, Any]] = []
-    geometries: list[Point] = []
-
-    for f in features:
-        props = f.get("properties", {})
-        geom = f.get("geometry")
-        if not geom or geom.get("type") != "Point":
-            continue
-
-        coords = geom.get("coordinates", [])
-        if len(coords) < 2:
-            continue
-
-        name = props.get("DENOM_C", props.get("NOMBRE", f"Supermarket {len(records) + 1}"))
-
-        records.append({
-            "tenant_id": tenant_id,
-            "type_id": type_id,
-            "name": name,
-            "weight": 1.0,
-            "metadata": json.dumps({
-                "source": "geoeuskadi_eustat",
-                "cnae": props.get("CNAE", ""),
-            }),
-        })
-        geometries.append(Point(coords[0], coords[1]))
-
-    count = len(records)
-    if records:
-        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
-        _append_destinations(gdf, serving)
-
-    log.info("supermarkets_import_complete", count=count)
-    return count
-
-
-def import_jobs(tenant_id: str, serving_dir: str | Path) -> int:
-    """Import employment zones (business parks) in Bizkaia from EUSTAT.
-
-    Uses polygon centroids as destination points, weighted by area.
-    """
-    serving = Path(serving_dir)
-    log = logger.bind(tenant_id=tenant_id, source="geoeuskadi")
-    log.info("jobs_import_start")
-
-    type_id = _dest_type_id("jobs")
-
-    features = _query_all_features(EMPLOYMENT_ZONES_URL)
-    features = _filter_bizkaia_bbox(features)
-
-    records: list[dict[str, Any]] = []
-    geometries: list[Point] = []
-
-    for f in features:
-        props = f.get("properties", {})
-        geom_json = f.get("geometry")
-        if not geom_json:
-            continue
-
-        name = props.get("GAE_DS_C", props.get("DENOM_C", props.get("NOMBRE", f"Employment zone {len(records) + 1}")))
-
-        # Use centroid for polygon geometries
-        geom_shape = shape(geom_json)
-        centroid = geom_shape.centroid
-
-        records.append({
-            "tenant_id": tenant_id,
-            "type_id": type_id,
-            "name": name,
-            "weight": 1.0,
-            "metadata": json.dumps({
-                "source": "geoeuskadi_eustat",
-                "code": props.get("GAE_CODAE", ""),
-            }),
-        })
-        geometries.append(centroid)
-
-    count = len(records)
-    if records:
-        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
-        _append_destinations(gdf, serving)
-
-    log.info("jobs_import_complete", count=count)
-    return count
-
-
-# ── Helpers ──
-
-
-def _append_destinations(new_gdf: gpd.GeoDataFrame, serving: Path) -> None:
-    """Append new destinations to the existing destinations.parquet, or create it."""
-    dest_path = serving / "destinations.parquet"
-    if dest_path.exists():
-        existing = gpd.read_parquet(dest_path)
-        combined = pd.concat([existing, new_gdf], ignore_index=True)
-        combined = gpd.GeoDataFrame(combined, geometry="geometry", crs="EPSG:4326")
-    else:
-        combined = new_gdf
-    _write_geoparquet(combined, dest_path)
-
-
-def _filter_bizkaia_bbox(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Filter GeoJSON features to those within the Bizkaia bounding box.
-
-    Approximate Bizkaia extent in WGS84:
-    lon: -3.45 to -2.40, lat: 43.05 to 43.45
-    """
-    filtered = []
-    for f in features:
-        geom = f.get("geometry")
-        if not geom:
-            continue
-        coords = geom.get("coordinates")
-        if not coords:
-            continue
-
-        # Get a representative point
-        if geom["type"] == "Point":
-            lon, lat = coords[0], coords[1]
-        elif geom["type"] in ("Polygon", "MultiPolygon"):
-            # Use first coordinate of first ring
-            ring = coords[0] if geom["type"] == "Polygon" else coords[0][0]
-            if not ring:
-                continue
-            lon, lat = ring[0][0], ring[0][1]
-        else:
-            continue
-
-        if -3.45 <= lon <= -2.40 and 43.05 <= lat <= 43.45:
-            filtered.append(f)
-
-    return filtered

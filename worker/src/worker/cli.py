@@ -190,13 +190,14 @@ def compute_scores(
 def import_pois(
     tenant: str = typer.Option(DEMO_TENANT_ID, help="Tenant ID"),
     pois_dir: Path = typer.Option("/data/pois", help="Dir with POI CSV files"),
+    clear_existing: bool = typer.Option(False, "--clear-existing", help="Delete existing destinations per type before inserting"),
     serving_dir: Path = typer.Option(None, help="Serving data directory"),
 ) -> None:
     """Import custom POIs from CSV files."""
     from worker.pipeline.import_pois import import_pois_from_csv
 
     sd = str(serving_dir or get_settings().serving_dir)
-    results = import_pois_from_csv(tenant, sd, pois_dir)
+    results = import_pois_from_csv(tenant, sd, pois_dir, clear_existing=clear_existing)
     if not results:
         typer.echo("No CSV files found in " + str(pois_dir))
         return
@@ -251,14 +252,14 @@ def import_geoeuskadi(
     from worker.pipeline.geoeuskadi import (
         import_bizkaia_boundary,
         import_comarcas,
-        import_health,
-        import_jobs,
         import_municipalities,
-        import_schools,
-        import_supermarkets,
+        seed_tenants_and_modes,
     )
 
     sd = str(serving_dir or get_settings().serving_dir)
+
+    typer.echo("Seeding tenants, modes, and destination types...")
+    seed_tenants_and_modes(sd)
 
     typer.echo("Importing Bizkaia boundary...")
     import_bizkaia_boundary(tenant, sd)
@@ -271,22 +272,6 @@ def import_geoeuskadi(
     typer.echo("Importing comarcas...")
     n = import_comarcas(tenant, sd)
     typer.echo(f"  -> {n} comarcas")
-
-    typer.echo("Importing schools...")
-    n = import_schools(tenant, sd)
-    typer.echo(f"  -> {n} schools")
-
-    typer.echo("Importing health centres...")
-    n = import_health(tenant, sd)
-    typer.echo(f"  -> {n} health facilities")
-
-    typer.echo("Importing supermarkets...")
-    n = import_supermarkets(tenant, sd)
-    typer.echo(f"  -> {n} supermarkets")
-
-    typer.echo("Importing employment zones...")
-    n = import_jobs(tenant, sd)
-    typer.echo(f"  -> {n} employment zones")
 
     typer.echo("\nGeoEuskadi import complete!")
 

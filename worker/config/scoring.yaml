@@ -6,7 +6,6 @@
 # combined_weights: must sum to 1.0 across all (mode, purpose) pairs
 
 # Identity mapping – each POI type is its own purpose bucket.
-# Includes both real GeoEuskadi codes and synthetic seed_demo codes.
 purpose_map:
   aeropuerto: aeropuerto
   bachiller: bachiller
@@ -18,11 +17,6 @@ purpose_map:
   osakidetza: osakidetza
   residencia: residencia
   universidad: universidad
-  # Synthetic demo types (used by seed-demo command)
-  jobs: jobs
-  school_primary: school_primary
-  health_gp: health_gp
-  supermarket: supermarket
 
 impedance:
   TRANSIT:
@@ -36,10 +30,6 @@ impedance:
     osakidetza: 0.03
     residencia: 0.03
     universidad: 0.03
-    jobs: 0.03
-    school_primary: 0.03
-    health_gp: 0.03
-    supermarket: 0.03
 
 diminishing:
   beta: 0.7
@@ -47,10 +37,8 @@ diminishing:
 max_travel_time: 120
 
 # Equal weights across all POI types (TRANSIT only).
-# Real data uses 10 types; demo data uses 4 types.
-# Both sets are listed here — the scoring engine dynamically normalises
-# weights so that only types present in the data contribute and their
-# effective weights sum to 1.0.
+# The scoring engine dynamically normalises weights so that only types
+# present in the data contribute and their effective weights sum to 1.0.
 combined_weights:
   TRANSIT:
     aeropuerto: 0.10
@@ -63,7 +51,3 @@ combined_weights:
     osakidetza: 0.10
     residencia: 0.10
     universidad: 0.10
-    jobs: 0.25
-    school_primary: 0.25
-    health_gp: 0.25
-    supermarket: 0.25

@@ -20,20 +20,16 @@ const TIME_SLOTS: string[] = Array.from({ length: 48 }, (_, i) => {
 });
 const DEFAULT_TIME_INDEX = 16; // 08:00
 
-// ── POI types (primary filter) ──
-const POI_TYPES = [
-  { value: null, label: "Combined", descKey: "map.allDestTypes" },
-  { value: "aeropuerto", label: "Aeropuerto", descKey: "poi.aeropuerto", color: "#6366f1" },
-  { value: "bachiller", label: "Bachiller", descKey: "poi.bachiller", color: "#f59e0b" },
-  { value: "centro_educativo", label: "Centro Educativo", descKey: "poi.centro_educativo", color: "#eab308" },
-  { value: "centro_urbano", label: "Centro Urbano", descKey: "poi.centro_urbano", color: "#8b5cf6" },
-  { value: "consulta_general", label: "Consulta General", descKey: "poi.consulta_general", color: "#ef4444" },
-  { value: "hacienda", label: "Hacienda", descKey: "poi.hacienda", color: "#64748b" },
-  { value: "hospital", label: "Hospital", descKey: "poi.hospital", color: "#dc2626" },
-  { value: "osakidetza", label: "Osakidetza", descKey: "poi.osakidetza", color: "#f97316" },
-  { value: "residencia", label: "Residencia", descKey: "poi.residencia", color: "#14b8a6" },
-  { value: "universidad", label: "Universidad", descKey: "poi.universidad", color: "#22c55e" },
-] as const;
+// ── Color palette for dynamically-loaded destination types ──
+const DEST_COLOR_PALETTE = [
+  "#6366f1", "#f59e0b", "#eab308", "#8b5cf6", "#ef4444",
+  "#64748b", "#dc2626", "#f97316", "#14b8a6", "#22c55e",
+  "#0ea5e9", "#a855f7", "#ec4899", "#84cc16", "#06b6d4",
+];
+
+type DestType = { code: string; label: string };
+type PoiType = { value: string | null; label: string; descKey: string; color?: string };
+type DestLayer = { id: string; type: string; color: string; label: string };
 
 // ── Metrics ──
 type MetricType = "score" | "travel_time";
@@ -87,19 +83,30 @@ const OPERATORS = [
   { id: "FunicularArtxanda", label: "Funicular Artxanda", color: "#a855f7" }, // violet
 ] as const;
 
-// ── Destination marker styles ──
-const DEST_LAYERS = [
-  { id: "dest-aeropuerto", type: "aeropuerto", color: "#6366f1", label: "Aeropuerto" },
-  { id: "dest-bachiller", type: "bachiller", color: "#f59e0b", label: "Bachiller" },
-  { id: "dest-centro-educativo", type: "centro_educativo", color: "#eab308", label: "Centro Educativo" },
-  { id: "dest-centro-urbano", type: "centro_urbano", color: "#8b5cf6", label: "Centro Urbano" },
-  { id: "dest-consulta-general", type: "consulta_general", color: "#ef4444", label: "Consulta General" },
-  { id: "dest-hacienda", type: "hacienda", color: "#64748b", label: "Hacienda" },
-  { id: "dest-hospital", type: "hospital", color: "#dc2626", label: "Hospital" },
-  { id: "dest-osakidetza", type: "osakidetza", color: "#f97316", label: "Osakidetza" },
-  { id: "dest-residencia", type: "residencia", color: "#14b8a6", label: "Residencia" },
-  { id: "dest-universidad", type: "universidad", color: "#22c55e", label: "Universidad" },
-];
+/** Build POI_TYPES and DEST_LAYERS from API response */
+function buildDestMeta(types: DestType[]): { poiTypes: PoiType[]; destLayers: DestLayer[] } {
+  const poiTypes: PoiType[] = [
+    { value: null, label: "Combined", descKey: "map.allDestTypes" },
+  ];
+  const destLayers: DestLayer[] = [];
+  for (let i = 0; i < types.length; i++) {
+    const dt = types[i];
+    const color = DEST_COLOR_PALETTE[i % DEST_COLOR_PALETTE.length];
+    poiTypes.push({
+      value: dt.code,
+      label: dt.label,
+      descKey: `poi.${dt.code}`,
+      color,
+    });
+    destLayers.push({
+      id: `dest-${dt.code.replace(/_/g, "-")}`,
+      type: dt.code,
+      color,
+      label: dt.label,
+    });
+  }
+  return { poiTypes, destLayers };
+}
 
 // ── Zoom → grid resolution mapping (delegates to map-3d.ts) ──
 const getResolution = getGridResolution;
@@ -301,10 +308,14 @@ export default function ConnectivityMap() {
     { id: "labels", label: "", labelKey: "map.labels", visible: false },
   ]);
 
-  // Per-POI-type destination toggles
-  const [destToggles, setDestToggles] = useState(
-    DEST_LAYERS.map((dt) => ({ id: dt.id, label: dt.label, color: dt.color, visible: false })),
-  );
+  // Dynamic destination types from API
+  const [poiTypes, setPoiTypes] = useState<PoiType[]>([
+    { value: null, label: "Combined", descKey: "map.allDestTypes" },
+  ]);
+  const [destLayers, setDestLayers] = useState<DestLayer[]>([]);
+
+  // Per-POI-type destination toggles (initialised once destLayers are fetched)
+  const [destToggles, setDestToggles] = useState<{ id: string; label: string; color: string; visible: boolean }[]>([]);
 
   // Per-operator visibility + global route/stop toggles
   const [operators, setOperators] = useState<OperatorState[]>(
@@ -331,7 +342,7 @@ export default function ConnectivityMap() {
     metric: true,
     time: true,
     destination: true,
-    social: false,
+    social: true,
     layers: false,
     destinations: false,
     transit: false,
@@ -791,6 +802,9 @@ export default function ConnectivityMap() {
           setResolution(getResolution(map.getZoom()));
         });
 
+        // Destination layers (populated during load from API)
+        let dl: DestLayer[] = [];
+
         map.on("load", async () => {
           try {
             // 1. Grid – source starts empty; the resolution/filter effect loads data
@@ -904,15 +918,23 @@ export default function ConnectivityMap() {
               }
             } catch (e) { console.warn("[map] optional layer failed:", e); }
 
-            // 6. Destinations
+            // 6. Destinations (types fetched dynamically)
             setStatus("map.loadingDestinations");
             try {
-              const destRes = await fetch(`${API_BASE}/destinations/geojson`, {
-                headers: { "X-Tenant-ID": DEMO_TENANT },
-              });
+              const [typesRes, destRes] = await Promise.all([
+                fetch(`${API_BASE}/destinations/types`),
+                fetch(`${API_BASE}/destinations/geojson`, { headers: { "X-Tenant-ID": DEMO_TENANT } }),
+              ]);
+              const fetchedTypes: DestType[] = typesRes.ok ? await typesRes.json() : [];
+              const meta = buildDestMeta(fetchedTypes);
+              dl = meta.destLayers;
+              setPoiTypes(meta.poiTypes);
+              setDestLayers(dl);
+              setDestToggles(dl.map((d) => ({ id: d.id, label: d.label, color: d.color, visible: false })));
+
               if (destRes.ok) {
                 map.addSource("destinations", { type: "geojson", data: await destRes.json() });
-                for (const dt of DEST_LAYERS) {
+                for (const dt of dl) {
                   map.addLayer({
                     id: dt.id, type: "circle", source: "destinations",
                     layout: { visibility: "none" },
@@ -1058,7 +1080,8 @@ export default function ConnectivityMap() {
           if (e.features?.[0]) setSelectedCell(e.features[0].properties as CellProperties);
         });
 
-        for (const dt of DEST_LAYERS) {
+        // Destination click handlers use the `dl` array captured during init
+        for (const dt of dl) {
           map.on("click", dt.id, (e) => {
             if (!e.features?.[0]) return;
             const p = e.features[0].properties;
@@ -1066,6 +1089,8 @@ export default function ConnectivityMap() {
               .setHTML(`<strong>${p?.name ?? ""}</strong><br/><span style="color:#666;font-size:12px">${p?.type_label ?? dt.label}</span>`)
               .addTo(map);
           });
+          map.on("mouseenter", dt.id, () => { map.getCanvas().style.cursor = "pointer"; });
+          map.on("mouseleave", dt.id, () => { map.getCanvas().style.cursor = ""; });
         }
 
         map.on("click", "transit-stops", (e) => {
@@ -1141,7 +1166,7 @@ export default function ConnectivityMap() {
             .addTo(map);
         });
 
-        const clickable = ["cells-fill", "cells-3d", "social-fill", "transit-stops", "transit-routes", "freq-circles", "municipalities-boundary", "nucleos-fill", ...DEST_LAYERS.map((d) => d.id)];
+        const clickable = ["cells-fill", "cells-3d", "social-fill", "transit-stops", "transit-routes", "freq-circles", "municipalities-boundary", "nucleos-fill"];
         for (const lid of clickable) {
           map.on("mouseenter", lid, () => { map.getCanvas().style.cursor = "pointer"; });
           map.on("mouseleave", lid, () => { map.getCanvas().style.cursor = ""; });
@@ -1166,7 +1191,7 @@ export default function ConnectivityMap() {
     return () => { cancelled = true; mapRef.current?.remove(); mapRef.current = null; };
   }, []);
 
-  const activePoi = POI_TYPES.find((p) => p.value === selectedPurpose);
+  const activePoi = poiTypes.find((p) => p.value === selectedPurpose);
 
   const timePeriod = (() => {
     const h = parseInt(departureTime.split(":")[0], 10);
@@ -1261,7 +1286,7 @@ export default function ConnectivityMap() {
             onToggle={() => toggleSection("destination")}
           >
             <div className="space-y-1">
-              {POI_TYPES.map((p) => (
+              {poiTypes.map((p) => (
                 <button
                   key={p.label}
                   onClick={() => setSelectedPurpose(p.value)}

@@ -9,16 +9,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-RUN pip install --no-cache-dir poetry==1.8.3 \
-    && poetry config virtualenvs.create false
+RUN pip install --no-cache-dir poetry==1.8.3
 
 # Install dependencies (cached layer)
 COPY worker/pyproject.toml worker/poetry.lock* ./
-RUN poetry install --no-interaction --no-ansi --no-root --only main
+RUN poetry export --only main --without-hashes -f requirements.txt -o requirements.txt \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy source and install package
 COPY worker/ .
-RUN poetry install --no-interaction --no-ansi --only main
+RUN pip install --no-cache-dir --no-deps .
 
 RUN chown -R app:app /app
 USER app

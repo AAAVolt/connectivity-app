@@ -150,6 +150,7 @@ def _append_destinations(new_gdf: gpd.GeoDataFrame, serving: Path) -> None:
         combined = gpd.GeoDataFrame(combined, geometry="geometry", crs="EPSG:4326")
     else:
         combined = new_gdf
+    combined["id"] = range(1, len(combined) + 1)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(dest_path)
 

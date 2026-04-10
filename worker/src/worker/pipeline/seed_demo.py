@@ -63,42 +63,41 @@ for _h in range(24):
 # Destination type code -> id mapping (must match destination_types.parquet)
 # These IDs correspond to the DESTINATION_TYPES list in geoeuskadi.py
 DEST_TYPE_IDS: dict[str, int] = {
-    "jobs": 14,
-    "school_primary": 11,
-    "health_gp": 12,
-    "supermarket": 13,
+    "centro_educativo": 3,
+    "consulta_general": 5,
+    "hospital": 7,
+    "osakidetza": 8,
 }
 
 # Synthetic destination locations within the Bilbao demo area
 # (lon, lat, name) tuples grouped by destination type code
 DEMO_DESTINATIONS: dict[str, list[tuple[float, float, str]]] = {
-    "jobs": [
-        (-2.935, 43.263, "Abando Business District"),
-        (-2.945, 43.265, "Gran Via Office Park"),
-        (-2.924, 43.260, "Casco Viejo Commerce"),
-        (-2.950, 43.275, "Deusto University Campus"),
-        (-2.915, 43.257, "Bilbao La Vieja Workshops"),
-        (-2.940, 43.270, "Zorrotzaurre Tech Hub"),
-        (-2.960, 43.275, "San Ignacio Retail Park"),
-        (-2.930, 43.255, "Atxuri Logistics Centre"),
-    ],
-    "school_primary": [
+    "centro_educativo": [
         (-2.938, 43.262, "CEIP Cervantes"),
         (-2.948, 43.272, "CEIP Deusto"),
         (-2.922, 43.261, "CEIP Casco Viejo"),
         (-2.955, 43.278, "CEIP San Ignacio"),
+        (-2.935, 43.263, "IES Abando"),
+        (-2.945, 43.265, "IES Gran Via"),
+        (-2.924, 43.260, "IES Casco Viejo"),
+        (-2.930, 43.255, "Colegio Atxuri"),
     ],
-    "health_gp": [
+    "consulta_general": [
         (-2.934, 43.264, "Centro de Salud Abando"),
         (-2.920, 43.259, "Ambulatorio Casco Viejo"),
         (-2.952, 43.274, "Centro de Salud Deusto"),
     ],
-    "supermarket": [
-        (-2.937, 43.266, "Eroski Indautxu"),
-        (-2.925, 43.260, "BM Casco Viejo"),
-        (-2.953, 43.273, "Mercadona Deusto"),
-        (-2.942, 43.258, "Carrefour Express Abando"),
-        (-2.960, 43.276, "Eroski San Ignacio"),
+    "hospital": [
+        (-2.937, 43.266, "Hospital de Basurto"),
+        (-2.925, 43.260, "Hospital de Cruces"),
+        (-2.953, 43.273, "Hospital de Galdakao"),
+    ],
+    "osakidetza": [
+        (-2.942, 43.258, "Osakidetza Indautxu"),
+        (-2.960, 43.276, "Osakidetza San Ignacio"),
+        (-2.950, 43.275, "Osakidetza Deusto"),
+        (-2.940, 43.270, "Osakidetza Zorrotzaurre"),
+        (-2.915, 43.257, "Osakidetza Bilbao La Vieja"),
     ],
 }
 

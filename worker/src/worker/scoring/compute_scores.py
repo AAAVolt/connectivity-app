@@ -61,10 +61,15 @@ def compute_scores(
             f"No travel times found in {serving} or {raw_dir}"
         )
 
-    # Register other required tables
-    register_parquet(conn, "destinations", serving / "destinations.parquet")
-    register_parquet(conn, "destination_types", serving / "destination_types.parquet")
-    register_parquet(conn, "grid_cells", serving / "grid_cells.parquet")
+    # Register other required tables — fail early with clear message
+    for table in ("destinations", "destination_types", "grid_cells"):
+        path = serving / f"{table}.parquet"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Required file {path} not found. "
+                f"Ensure the import pipeline has run before scoring."
+            )
+        register_parquet(conn, table, path)
 
     # Discover departure time slots
     if departure_time is not None:

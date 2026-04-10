@@ -97,6 +97,18 @@ class DuckDBSession:
         cur.execute(sql, params or {})
         return DuckDBResult(cur)
 
+    def has_table(self, table_name: str) -> bool:
+        """Check if a table exists in the database."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = $1",
+                [table_name],
+            )
+            return cur.fetchone()[0] > 0
+        except duckdb.Error:
+            return False
+
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -177,6 +189,22 @@ def _load_table(conn: duckdb.DuckDBPyConnection, table: str, path: Path) -> None
     conn.execute(
         f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM read_parquet('{path}')"
     )
+
+    # Normalise geometry column name: GeoParquet uses 'geometry' but our
+    # SQL layer expects 'geom' everywhere.
+    try:
+        conn.execute(f"ALTER TABLE {table} RENAME COLUMN geometry TO geom")
+    except duckdb.Error:
+        pass  # Column doesn't exist or already named geom
+
+    # Ensure every table has an 'id' column (some Parquet files omit it).
+    try:
+        conn.execute(f"SELECT id FROM {table} LIMIT 0")
+    except duckdb.Error:
+        conn.execute(
+            f"CREATE OR REPLACE TABLE {table} AS "
+            f"SELECT ROW_NUMBER() OVER () AS id, * FROM {table}"
+        )
 
     # Convert WKB blobs → native GEOMETRY for spatial queries
     geo_cols = _GEO_TABLES.get(table, [])
