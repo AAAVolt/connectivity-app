@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { prefetchStaticMapData, prefetchDefaultCells } from "@/lib/prefetch";
 import {
   IconChartBar as BarChart3,
   IconBuilding as Building2,
@@ -1367,7 +1369,16 @@ function OverviewTab({
 export default function DashboardPage() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("overview");
+  const queryClient = useQueryClient();
   const { data, isLoading, error, refetch } = useDashboardData();
+
+  // Prefetch map data in background once dashboard loads
+  useEffect(() => {
+    if (data) {
+      prefetchStaticMapData(queryClient);
+      prefetchDefaultCells(queryClient);
+    }
+  }, [data, queryClient]);
 
   if (isLoading) {
     return (

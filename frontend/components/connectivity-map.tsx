@@ -1,10 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { IconLayoutSidebar as PanelLeft } from "@tabler/icons-react";
 import type { Map as MaplibreMap } from "maplibre-gl";
 import { useTranslation } from "@/lib/i18n";
-import { buildHeightExpr, getResolution as getGridResolution } from "@/lib/map-3d";
+import { getResolution as getGridResolution } from "@/lib/map-3d";
+import {
+  boundaryQueryOptions,
+  destTypesQueryOptions,
+  destinationsQueryOptions,
+  transitRoutesQueryOptions,
+  transitStopsQueryOptions,
+  nucleosQueryOptions,
+  departureTimesQueryOptions,
+  cellsQueryOptions,
+  frequencyQueryOptions,
+  socialMunisQueryOptions,
+  socioProfilesQueryOptions,
+} from "@/hooks/use-map-data";
 import { MapControlPanel } from "@/components/map/map-control-panel";
 import {
   SCORE_COLORS,
@@ -25,9 +39,6 @@ import type {
   OperatorState,
   CellProperties,
 } from "@/components/map/map-panel-types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const DEMO_TENANT = "00000000-0000-0000-0000-000000000001";
 
 const DEFAULT_CENTER: [number, number] = [-2.87, 43.22];
 const DEFAULT_ZOOM = 10;
@@ -205,9 +216,6 @@ function buildMuniPopupHtml(
   );
 }
 
-// ── Default extrusion height (meters) for max score ──
-const DEFAULT_EXTRUSION_HEIGHT = 400;
-
 const BASE_LAYER_MAPPING: Record<string, string[]> = {
   cells: ["cells-fill", "cells-hatch", "cells-outline"],
   region: ["region-boundary"],
@@ -222,9 +230,11 @@ export default function ConnectivityMap() {
   const { t } = useTranslation();
   const tRef = useRef(t);
   tRef.current = t;
+  const queryClient = useQueryClient();
+  const queryClientRef = useRef(queryClient);
+  queryClientRef.current = queryClient;
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapInstance | null>(null);
-  const profilesCacheRef = useRef<Array<Record<string, unknown>> | null>(null);
   const [selectedCell, setSelectedCell] = useState<CellProperties | null>(null);
   const [status, setStatus] = useState("map.initializingMap");
   const [error, setError] = useState<string | null>(null);
@@ -271,10 +281,8 @@ export default function ConnectivityMap() {
 
   // 3D mode / perspective
   const [perspective, setPerspective] = useState<Perspective>("2d");
-  const [is3D, setIs3D] = useState(false);
   const [showTerrain, setShowTerrain] = useState(false);
   const [showBuildings, setShowBuildings] = useState(false);
-  const [extrusionHeight, setExtrusionHeight] = useState(DEFAULT_EXTRUSION_HEIGHT);
 
   // Panel collapse
   const [panelOpen, setPanelOpen] = useState(true);
@@ -347,15 +355,10 @@ export default function ConnectivityMap() {
       return;
     }
 
-    // Fetch frequency GeoJSON for the selected time window
-    const controller = new AbortController();
-    fetch(
-      `${API_BASE}/sociodemographic/frequency/geojson?time_window=${freqWindow}&min_dph=0`,
-      { headers: { "X-Tenant-ID": DEMO_TENANT }, signal: controller.signal },
-    )
-      .then((res) => (res.ok ? res.json() : null))
+    let cancelled = false;
+    queryClientRef.current.fetchQuery(frequencyQueryOptions(freqWindow))
       .then((data) => {
-        if (!data) return;
+        if (cancelled || !data) return;
         const mlMap = map as unknown as MaplibreMap;
         const source = mlMap.getSource("frequency");
         if (source && "setData" in source) {
@@ -366,11 +369,11 @@ export default function ConnectivityMap() {
         }
       })
       .catch((err) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (cancelled) return;
         setError("Failed to load frequency data");
       });
 
-    return () => controller.abort();
+    return () => { cancelled = true; };
   }, [showFrequency, freqWindow, mapReady]);
 
   // Social choropleth layer reactivity
@@ -389,14 +392,10 @@ export default function ConnectivityMap() {
     // Load data if source doesn't exist yet
     const source = mlMap.getSource("social-munis");
     if (!source) {
-      const controller = new AbortController();
-      fetch(`${API_BASE}/sociodemographic/municipalities/geojson`, {
-        headers: { "X-Tenant-ID": DEMO_TENANT },
-        signal: controller.signal,
-      })
-        .then((res) => (res.ok ? res.json() : null))
+      let cancelled = false;
+      queryClientRef.current.ensureQueryData(socialMunisQueryOptions())
         .then((data) => {
-          if (!data) return;
+          if (cancelled || !data) return;
           mlMap.addSource("social-munis", { type: "geojson", data });
           mlMap.addLayer({
             id: "social-fill", type: "fill", source: "social-munis",
@@ -409,10 +408,10 @@ export default function ConnectivityMap() {
           applySocialPaint(mlMap, socialLayer);
         })
         .catch((err) => {
-          if (err instanceof DOMException && err.name === "AbortError") return;
+          if (cancelled) return;
           setError("Failed to load sociodemographic layer");
         });
-      return () => controller.abort();
+      return () => { cancelled = true; };
     } else {
       if (map.getLayer("social-fill")) {
         map.setLayoutProperty("social-fill", "visibility", "visible");
@@ -475,13 +474,10 @@ export default function ConnectivityMap() {
     });
   }, []);
 
-  // Fetch available departure times on mount
+  // Fetch available departure times on mount (via React Query cache)
   useEffect(() => {
-    fetch(`${API_BASE}/cells/departure-times`, {
-      headers: { "X-Tenant-ID": DEMO_TENANT },
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((times: string[] | null) => {
+    queryClientRef.current.ensureQueryData(departureTimesQueryOptions())
+      .then((times: string[]) => {
         if (times && times.length > 0) {
           setAvailableTimes(times);
           // Keep current index if valid, otherwise snap to nearest
@@ -507,35 +503,18 @@ export default function ConnectivityMap() {
     const map = mapRef.current;
     if (!map || !mapReady) return;
 
-    const controller = new AbortController();
-
-    const params = new URLSearchParams();
-    if (selectedPurpose) {
-      params.set("mode", "TRANSIT");
-      params.set("purpose", selectedPurpose);
-    }
-    if (metric === "travel_time") {
-      params.set("metric", "travel_time");
-    }
-    params.set("departure_time", departureTime);
-    if (resolution !== 100) {
-      params.set("resolution", String(resolution));
-    }
-    const qs = params.toString();
-
-    const url = `${API_BASE}/cells/geojson${qs ? `?${qs}` : ""}`;
+    let cancelled = false;
     const mlMap = map as unknown as MaplibreMap;
 
-    fetch(url, {
-      headers: { "X-Tenant-ID": DEMO_TENANT },
-      signal: controller.signal,
-    })
-      .then((res) => {
-        if (!res.ok) return null;
-        return res.json();
-      })
+    queryClientRef.current.fetchQuery(cellsQueryOptions({
+      mode: selectedPurpose ? "TRANSIT" : undefined,
+      purpose: selectedPurpose ?? undefined,
+      metric,
+      resolution,
+      departureTime,
+    }))
       .then((data) => {
-        if (!data) return;
+        if (cancelled || !data) return;
         const source = mlMap.getSource("cells");
         if (source && "setData" in source) {
           (source as { setData: (d: unknown) => void }).setData(data);
@@ -543,7 +522,7 @@ export default function ConnectivityMap() {
         }
       })
       .catch((err) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (cancelled) return;
         setError("Failed to load grid cells");
       });
 
@@ -560,21 +539,14 @@ export default function ConnectivityMap() {
       mlMap.setPaintProperty("cells-fill", "fill-color", colorExpr);
     }
 
-    // Sync 3D extrusion color + height to match the active metric
-    if (map.getLayer("cells-3d")) {
-      mlMap.setPaintProperty("cells-3d", "fill-extrusion-color", colorExpr);
-      const heightExpr = buildHeightExpr(metric, extrusionHeight);
-      mlMap.setPaintProperty("cells-3d", "fill-extrusion-height", heightExpr);
-    }
-
     // Adjust outline width – thicker for coarse grids, still visible for 100 m
     if (map.getLayer("cells-outline")) {
       const width = resolution >= 1000 ? 1.5 : resolution >= 500 ? 0.8 : resolution >= 200 ? 0.5 : 0.3;
       mlMap.setPaintProperty("cells-outline", "line-width", width);
     }
 
-    return () => controller.abort();
-  }, [selectedPurpose, metric, departureTime, resolution, extrusionHeight, mapReady]);
+    return () => { cancelled = true; };
+  }, [selectedPurpose, metric, departureTime, resolution, mapReady]);
 
   // ── Opacity sync ──
   useEffect(() => {
@@ -589,31 +561,24 @@ export default function ConnectivityMap() {
     set("cells-fill", "fill-opacity", fillOpacity);
     set("cells-hatch", "fill-opacity", fillOpacity);
     set("cells-outline", "line-opacity", fillOpacity);
-    set("cells-3d", "fill-extrusion-opacity", fillOpacity);
   }, [fillOpacity, mapReady]);
 
-  // ── 3D mode toggle (extrusion layers + buildings) ──
+  // ── Buildings + sky visibility ──
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
 
     try {
-      if (map.getLayer("cells-fill")) {
-        map.setLayoutProperty("cells-fill", "visibility", "visible");
-      }
-      if (map.getLayer("cells-3d")) {
-        map.setLayoutProperty("cells-3d", "visibility", is3D ? "visible" : "none");
-      }
-      if (map.getLayer("sky")) {
-        map.setLayoutProperty("sky", "visibility", is3D ? "visible" : "none");
-      }
       if (map.getLayer("3d-buildings")) {
         map.setLayoutProperty("3d-buildings", "visibility", showBuildings ? "visible" : "none");
+      }
+      if (map.getLayer("sky")) {
+        map.setLayoutProperty("sky", "visibility", perspective === "3d" ? "visible" : "none");
       }
     } catch (err) {
       console.error("[3D] layer toggle failed:", err);
     }
-  }, [is3D, showBuildings, mapReady]);
+  }, [showBuildings, perspective, mapReady]);
 
   // ── Terrain toggle ──
   // DEM source is in the initial style, so tiles are already loading.
@@ -676,16 +641,7 @@ export default function ConnectivityMap() {
     }
   }, [basemap, mapReady]);
 
-  // ── 3D extrusion height sync ──
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady || !is3D) return;
-    const mlMap = map as unknown as MaplibreMap;
-    if (!map.getLayer("cells-3d")) return;
 
-    const heightExpr = buildHeightExpr(metric, extrusionHeight);
-    mlMap.setPaintProperty("cells-3d", "fill-extrusion-height", heightExpr);
-  }, [extrusionHeight, metric, is3D, mapReady]);
 
   // ── Map initialisation ──
   useEffect(() => {
@@ -830,17 +786,33 @@ export default function ConnectivityMap() {
               paint: { "line-color": "#555", "line-width": 0.15 },
             });
 
-            // ── Tier 1: Boundary layers (parallel) ──
+            // ── Tier 1: Boundary layers (parallel, via React Query cache) ──
             setStatus("map.loadingLayers");
+            const qc = queryClientRef.current;
+
+            const addCachedGeoJsonLayer = async (
+              queryOpts: { queryKey: readonly unknown[]; queryFn: () => Promise<unknown>; staleTime: number },
+              sourceId: string, layerId: string, layerType: "line" | "fill",
+              paint: Record<string, unknown>, visibility: "visible" | "none" = "visible",
+            ) => {
+              try {
+                const data = await qc.ensureQueryData(queryOpts);
+                if (data) {
+                  map.addSource(sourceId, { type: "geojson", data: data as GeoJSON.FeatureCollection });
+                  map.addLayer({ id: layerId, type: layerType, source: sourceId, layout: { visibility }, paint } as Parameters<MaplibreMap["addLayer"]>[0]);
+                }
+              } catch (e) { console.warn("[map] optional layer failed:", e); }
+            };
+
             await Promise.allSettled([
-              addGeoJsonLayer(map, `${API_BASE}/boundaries/region/geojson`,
+              addCachedGeoJsonLayer(boundaryQueryOptions("region"),
                 "region", "region-boundary", "line",
                 { "line-color": "#1e293b", "line-width": 3 }),
-              addGeoJsonLayer(map, `${API_BASE}/boundaries/comarcas/geojson`,
+              addCachedGeoJsonLayer(boundaryQueryOptions("comarcas"),
                 "comarcas", "comarcas-boundary", "line",
                 { "line-color": "#7c3aed", "line-width": 2, "line-dasharray": [4, 2] },
                 "none"),
-              addGeoJsonLayer(map, `${API_BASE}/boundaries/municipalities/geojson`,
+              addCachedGeoJsonLayer(boundaryQueryOptions("municipalities"),
                 "municipalities", "municipalities-boundary", "line",
                 { "line-color": "#0e7490", "line-width": 1.2 }, "none"),
             ]);
@@ -882,16 +854,14 @@ export default function ConnectivityMap() {
               });
             }
 
-            // ── Tier 2: Data layers (parallel) ──
+            // ── Tier 2: Data layers (parallel, via React Query cache) ──
             setStatus("map.loadingDestinations");
 
             const loadNucleos = async () => {
               try {
-                const nucleosRes = await fetch(`${API_BASE}/boundaries/nucleos/geojson`, {
-                  headers: { "X-Tenant-ID": DEMO_TENANT },
-                });
-                if (nucleosRes.ok) {
-                  map.addSource("nucleos", { type: "geojson", data: await nucleosRes.json() });
+                const data = await qc.ensureQueryData(nucleosQueryOptions());
+                if (data) {
+                  map.addSource("nucleos", { type: "geojson", data });
                   map.addLayer({
                     id: "nucleos-fill", type: "fill", source: "nucleos",
                     layout: { visibility: "none" },
@@ -908,19 +878,18 @@ export default function ConnectivityMap() {
 
             const loadDestinations = async () => {
               try {
-                const [typesRes, destRes] = await Promise.all([
-                  fetch(`${API_BASE}/destinations/types`),
-                  fetch(`${API_BASE}/destinations/geojson`, { headers: { "X-Tenant-ID": DEMO_TENANT } }),
+                const [fetchedTypes, destData] = await Promise.all([
+                  qc.ensureQueryData(destTypesQueryOptions()),
+                  qc.ensureQueryData(destinationsQueryOptions()),
                 ]);
-                const fetchedTypes: DestType[] = typesRes.ok ? await typesRes.json() : [];
-                const meta = buildDestMeta(fetchedTypes);
+                const meta = buildDestMeta(fetchedTypes ?? []);
                 dl = meta.destLayers;
                 setPoiTypes(meta.poiTypes);
                 setDestLayers(dl);
                 setDestToggles(dl.map((d) => ({ id: d.id, label: d.label, color: d.color, visible: false })));
 
-                if (destRes.ok) {
-                  map.addSource("destinations", { type: "geojson", data: await destRes.json() });
+                if (destData) {
+                  map.addSource("destinations", { type: "geojson", data: destData });
                   for (const dt of dl) {
                     map.addLayer({
                       id: dt.id, type: "circle", source: "destinations",
@@ -938,9 +907,8 @@ export default function ConnectivityMap() {
 
             const loadTransitRoutes = async () => {
               try {
-                const routesRes = await fetch(`${API_BASE}/transit/routes`);
-                if (routesRes.ok) {
-                  const routesData = await routesRes.json();
+                const routesData = await qc.ensureQueryData(transitRoutesQueryOptions());
+                if (routesData) {
                   map.addSource("transit-routes", { type: "geojson", data: routesData });
 
                   const colorExpr: unknown[] = ["match", ["get", "operator"]];
@@ -964,9 +932,9 @@ export default function ConnectivityMap() {
 
             const loadTransitStops = async () => {
               try {
-                const stopsRes = await fetch(`${API_BASE}/transit/stops`);
-                if (stopsRes.ok) {
-                  map.addSource("transit-stops", { type: "geojson", data: await stopsRes.json() });
+                const stopsData = await qc.ensureQueryData(transitStopsQueryOptions());
+                if (stopsData) {
+                  map.addSource("transit-stops", { type: "geojson", data: stopsData });
 
                   const stopColorExpr: unknown[] = ["match", ["get", "operator"]];
                   for (const op of OPERATORS) {
@@ -1023,30 +991,7 @@ export default function ConnectivityMap() {
               },
             });
 
-            // 10. 3D cells extrusion layer (hidden by default, toggled via 3D mode)
-            // Filter out zero/null scores to reduce GPU geometry count
-            map.addLayer({
-              id: "cells-3d",
-              type: "fill-extrusion",
-              source: "cells",
-              layout: { visibility: "none" },
-              filter: [">", ["coalesce", ["get", "score"], 0], 0],
-              maxzoom: 13,
-              paint: {
-                "fill-extrusion-color": [
-                  "interpolate", ["linear"],
-                  ["coalesce", ["get", "score"], 0],
-                  ...SCORE_COLORS.flatMap(([stop, color]) => [stop, color]),
-                ] as unknown as string,
-                "fill-extrusion-height": [
-                  "*", ["coalesce", ["get", "score"], 0], DEFAULT_EXTRUSION_HEIGHT / 100,
-                ] as unknown as number,
-                "fill-extrusion-base": 0,
-                "fill-extrusion-opacity": 0.75,
-              },
-            } as Parameters<MaplibreMap["addLayer"]>[0]);
-
-            // 11. Sky layer (hidden by default, visible in 3D mode)
+            // 10. Sky layer (hidden by default, visible in 3D perspective)
             try {
               map.addLayer({
                 id: "sky",
@@ -1069,9 +1014,6 @@ export default function ConnectivityMap() {
 
         // ── Interactions ──
         map.on("click", "cells-fill", (e) => {
-          if (e.features?.[0]) setSelectedCell(e.features[0].properties as CellProperties);
-        });
-        map.on("click", "cells-3d", (e) => {
           if (e.features?.[0]) setSelectedCell(e.features[0].properties as CellProperties);
         });
 
@@ -1111,15 +1053,9 @@ export default function ConnectivityMap() {
           const muniCode = props?.muni_code ?? "";
 
           try {
-            // Cache profiles on first click, reuse on subsequent clicks
-            if (!profilesCacheRef.current) {
-              const res = await fetch(`${API_BASE}/sociodemographic/profiles`, {
-                headers: { "X-Tenant-ID": DEMO_TENANT },
-              });
-              profilesCacheRef.current = res.ok ? await res.json() : [];
-            }
-            const p = profilesCacheRef.current!.find(
-              (pr) => pr.muni_code === muniCode || pr.name === muniName,
+            const profiles = await queryClientRef.current.ensureQueryData(socioProfilesQueryOptions());
+            const p = (profiles ?? []).find(
+              (pr: Record<string, unknown>) => pr.muni_code === muniCode || pr.name === muniName,
             );
             new maplibregl.Popup().setLngLat(e.lngLat)
               .setHTML(buildMuniPopupHtml(muniName, p ?? null, tRef.current))
@@ -1162,7 +1098,7 @@ export default function ConnectivityMap() {
             .addTo(map);
         });
 
-        const clickable = ["cells-fill", "cells-3d", "social-fill", "transit-stops", "transit-routes", "freq-circles", "municipalities-boundary", "nucleos-fill"];
+        const clickable = ["cells-fill", "social-fill", "transit-stops", "transit-routes", "freq-circles", "municipalities-boundary", "nucleos-fill"];
         for (const lid of clickable) {
           map.on("mouseenter", lid, () => { map.getCanvas().style.cursor = "pointer"; });
           map.on("mouseleave", lid, () => { map.getCanvas().style.cursor = ""; });
@@ -1170,17 +1106,6 @@ export default function ConnectivityMap() {
       } catch (err) {
         setError(`Map init failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-    }
-
-    async function addGeoJsonLayer(map: MaplibreMap, url: string, sourceId: string, layerId: string,
-      layerType: "line" | "fill", paint: Record<string, unknown>, visibility: "visible" | "none" = "visible") {
-      try {
-        const res = await fetch(url, { headers: { "X-Tenant-ID": DEMO_TENANT } });
-        if (res.ok) {
-          map.addSource(sourceId, { type: "geojson", data: await res.json() });
-          map.addLayer({ id: layerId, type: layerType, source: sourceId, layout: { visibility }, paint } as Parameters<MaplibreMap["addLayer"]>[0]);
-        }
-      } catch (e) { console.warn("[map] optional layer failed:", e); }
     }
 
     init();
@@ -1241,14 +1166,10 @@ export default function ConnectivityMap() {
         setBasemap={setBasemap}
         perspective={perspective}
         setPerspective={setPerspective}
-        is3D={is3D}
-        setIs3D={setIs3D}
         showBuildings={showBuildings}
         setShowBuildings={setShowBuildings}
         showTerrain={showTerrain}
         setShowTerrain={setShowTerrain}
-        extrusionHeight={extrusionHeight}
-        setExtrusionHeight={setExtrusionHeight}
         resolution={resolution}
         destToggles={destToggles}
         toggleDestination={toggleDestination}

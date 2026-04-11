@@ -4,8 +4,8 @@ function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 60_000,
-        gcTime: 5 * 60_000,
+        staleTime: 10 * 60_000,   // 10 min — data changes only on admin reload
+        gcTime: 30 * 60_000,    // 30 min — keep unused queries longer
         retry: 1,
         refetchOnWindowFocus: false,
       },

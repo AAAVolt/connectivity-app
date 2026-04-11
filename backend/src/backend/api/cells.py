@@ -7,6 +7,7 @@ from enum import Enum
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
+from backend.api.cache import get_cached, set_cached
 from backend.api.schemas import CellResponse, CellScoreDetail, parse_geometry
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
@@ -203,10 +204,12 @@ _AGGREGATE_SQL = """
 
 @router.get("/departure-times")
 def get_available_departure_times(
+    response: Response,
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[str]:
     """Return sorted list of departure_time slots that have computed scores."""
+    response.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=86400"
     result = db.execute(
         """
         SELECT DISTINCT departure_time
@@ -240,6 +243,15 @@ def get_cells_geojson(
         )
 
     dep_time = _validate_departure_time(departure_time)
+    cache_key = f"cells_geojson:{tenant.tenant_id}:{mode}:{purpose}:{metric.value}:{resolution}:{dep_time}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return Response(
+            content=cached,
+            media_type="application/geo+json",
+            headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=3600"},
+        )
+
     params: dict[str, object] = {"tid": tenant.tenant_id, "dep_time": dep_time}
     base_sql = _build_base_query(mode, purpose, metric, params)
 
@@ -272,15 +284,19 @@ def get_cells_geojson(
         })
 
     geojson = {"type": "FeatureCollection", "features": features}
+    content = json.dumps(geojson)
+    set_cached(cache_key, content)
     return Response(
-        content=json.dumps(geojson),
+        content=content,
         media_type="application/geo+json",
+        headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=3600"},
     )
 
 
 @router.get("/{cell_id}", response_model=CellResponse)
 def get_cell(
     cell_id: int,
+    response: Response,
     departure_time: str = Query(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time of day (HH:MM)",
@@ -289,6 +305,7 @@ def get_cell(
     db: DuckDBSession = Depends(get_db),
 ) -> CellResponse:
     """Return cell info, connectivity scores, and combined score."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
     result = db.execute(

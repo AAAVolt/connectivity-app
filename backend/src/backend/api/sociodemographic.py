@@ -7,12 +7,11 @@ for the dashboard enrichment layer.
 from __future__ import annotations
 
 import json
-import threading
-import time
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
+from backend.api.cache import get_cached, set_cached
 from backend.api.cells import DEFAULT_DEPARTURE_TIME, _validate_departure_time
 from backend.api.schemas import parse_geometry
 from backend.auth.deps import get_tenant
@@ -20,17 +19,6 @@ from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
 
 router = APIRouter(prefix="/sociodemographic", tags=["sociodemographic"])
-
-# ── Thread-safe in-memory result cache for expensive queries ──
-_result_cache: dict[str, tuple[float, object]] = {}
-_cache_lock = threading.Lock()
-_CACHE_TTL = 300  # 5 minutes
-
-
-def _clear_result_cache() -> None:
-    """Called by admin/reload to invalidate cached results."""
-    with _cache_lock:
-        _result_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +98,13 @@ class MunicipalitySocioProfile(BaseModel):
 
 @router.get("/demographics", response_model=list[MunicipalityDemographics])
 def get_demographics(
+    response: Response,
     year: int = Query(2025, description="Reference year"),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityDemographics]:
     """Return age-group demographics per municipality."""
+    response.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=86400"
     if not db.has_table("municipality_demographics"):
         return []
     result = db.execute(
@@ -136,11 +126,13 @@ def get_demographics(
 
 @router.get("/income", response_model=list[MunicipalityIncome])
 def get_income(
+    response: Response,
     year: int | None = Query(None, description="Year (latest if omitted)"),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityIncome]:
     """Return income indicators per municipality."""
+    response.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=86400"
     if not db.has_table("municipality_income"):
         return []
     if year is None:
@@ -165,11 +157,13 @@ def get_income(
 
 @router.get("/car-ownership", response_model=list[MunicipalityCarOwnership])
 def get_car_ownership(
+    response: Response,
     year: int | None = Query(None, description="Year (latest if omitted)"),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[MunicipalityCarOwnership]:
     """Return car ownership rates per municipality."""
+    response.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=86400"
     if not db.has_table("municipality_car_ownership"):
         return []
     if year is None:
@@ -193,12 +187,14 @@ def get_car_ownership(
 
 @router.get("/frequency/geojson", response_model=FrequencyGeoJSON)
 def get_frequency_geojson(
+    response: Response,
     time_window: str = Query("07:00-09:00", description="Time window"),
     min_dph: float = Query(0, description="Min departures/hour filter"),
     db: DuckDBSession = Depends(get_db),
     tenant: TenantContext = Depends(get_tenant),
 ) -> FrequencyGeoJSON:
     """Return stop frequencies as GeoJSON for map overlay."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     if not db.has_table("stop_frequency"):
         return FrequencyGeoJSON(type="FeatureCollection", features=[])
     result = db.execute(
@@ -368,11 +364,9 @@ def get_socio_profiles(
     response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
 
     cache_key = f"profiles:{tenant.tenant_id}:{departure_time}"
-    with _cache_lock:
-        if cache_key in _result_cache:
-            cached_at, cached_data = _result_cache[cache_key]
-            if time.monotonic() - cached_at < _CACHE_TTL:
-                return cached_data  # type: ignore[return-value]
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
 
     if not db.has_table("municipality_demographics"):
         return []
@@ -430,6 +424,5 @@ def get_socio_profiles(
     )
 
     profiles = [MunicipalitySocioProfile(**row._mapping) for row in result.fetchall()]
-    with _cache_lock:
-        _result_cache[cache_key] = (time.monotonic(), profiles)
+    set_cached(cache_key, profiles)
     return profiles

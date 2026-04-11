@@ -14,6 +14,7 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
+from backend.api.cache import get_cached, set_cached
 from backend.api.cells import DEFAULT_DEPARTURE_TIME, _validate_departure_time
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
@@ -528,6 +529,11 @@ def _area_detail(
     if table not in _ALLOWED_AREA_TABLES or _ALLOWED_AREA_TABLES[table] != code_col:
         raise ValueError(f"Invalid area table/column: {table}/{code_col}")
 
+    cache_key = f"area_detail:{tenant.tenant_id}:{table}:{code_value}:{dep_time}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     dt_result = db.execute(
         "SELECT code, label FROM destination_types ORDER BY code"
     )
@@ -694,7 +700,7 @@ def _area_detail(
         for row in cov_result.fetchall()
     ]
 
-    return AreaDetail(
+    result_detail = AreaDetail(
         name=s.name,
         code=s.code,
         cell_count=s.cell_count,
@@ -704,16 +710,20 @@ def _area_detail(
         purpose_scores=purpose_scores,
         service_coverage=service_coverage,
     )
+    set_cached(cache_key, result_detail)
+    return result_detail
 
 
 @router.get("/comarca/{comarca_code}", response_model=AreaDetail)
 def get_comarca_detail(
     comarca_code: str,
+    response: Response,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> AreaDetail:
     """Full detail for a specific comarca."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
     return _area_detail(
         table="comarcas",
@@ -728,11 +738,13 @@ def get_comarca_detail(
 @router.get("/municipality/{muni_code}", response_model=AreaDetail)
 def get_municipality_detail(
     muni_code: str,
+    response: Response,
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> AreaDetail:
     """Full detail for a specific municipality."""
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
     return _area_detail(
         table="municipalities",

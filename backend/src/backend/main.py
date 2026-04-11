@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from backend.api.boundaries import router as boundaries_router
 from backend.api.cells import router as cells_router
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     )
 
     settings = get_settings()
+    application.add_middleware(GZipMiddleware, minimum_size=500)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
@@ -69,9 +71,9 @@ def create_app() -> FastAPI:
             )
         logger.info("Admin reload triggered by user=%s tenant=%s", tenant.user_id, tenant.tenant_id)
         reload_db()
-        # Invalidate server-side result caches after data reload
-        from backend.api.sociodemographic import _clear_result_cache
-        _clear_result_cache()
+        # Invalidate all server-side result caches after data reload
+        from backend.api.cache import clear_all as clear_result_cache
+        clear_result_cache()
         return {"status": "reloaded"}
 
     return application

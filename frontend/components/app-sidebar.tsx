@@ -1,8 +1,10 @@
 "use client";
 
+import { useCallback } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   IconLayoutDashboard as LayoutDashboard,
   IconMap as Map,
@@ -29,6 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useTranslation } from "@/lib/i18n";
 import type { Lang } from "@/lib/i18n";
+import { prefetchHeavyMapData, prefetchSocioProfiles } from "@/lib/prefetch";
 
 // ── Navigation items ──
 
@@ -51,6 +54,15 @@ export function AppSidebar() {
   const pathname = usePathname();
   const { t, lang, setLang } = useTranslation();
   const currentLang = LANGS.find((l) => l.code === lang) ?? LANGS[0];
+  const queryClient = useQueryClient();
+
+  const handleNavHover = useCallback(
+    (href: string) => {
+      if (href === "/map") prefetchHeavyMapData(queryClient);
+      if (href === "/context") prefetchSocioProfiles(queryClient);
+    },
+    [queryClient],
+  );
 
   return (
     <Sidebar collapsible="icon" variant="inset">
@@ -90,7 +102,7 @@ export function AppSidebar() {
                 return (
                   <SidebarMenuItem key={href}>
                     <SidebarMenuButton asChild isActive={active} tooltip={t(key)} className="text-[12px]">
-                      <Link href={href}>
+                      <Link href={href} onMouseEnter={() => handleNavHover(href)}>
                         <Icon className="size-4" />
                         <span>{t(key)}</span>
                       </Link>

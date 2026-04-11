@@ -10,6 +10,7 @@ import type {
   MunicipalitySocioProfile,
 } from "@/lib/api";
 import type { AreaRanking } from "@/components/dashboard-charts";
+import { dashboardKeys, STALE_TIMES } from "@/lib/query-keys";
 
 export interface DashboardData {
   summary: DashboardSummary;
@@ -21,17 +22,12 @@ export interface DashboardData {
   socioProfiles: MunicipalitySocioProfile[];
 }
 
-export const dashboardKeys = {
-  all: ["dashboard"] as const,
-  combined: (departureTime: string) =>
-    [...dashboardKeys.all, "combined", departureTime] as const,
-  areaDetail: (areaType: string, code: string) =>
-    [...dashboardKeys.all, "area-detail", areaType, code] as const,
-};
+export { dashboardKeys };
 
 export function useDashboardData(departureTime = "08:00") {
   return useQuery({
     queryKey: dashboardKeys.combined(departureTime),
+    staleTime: STALE_TIMES.COMPUTED,
     queryFn: async (): Promise<DashboardData> => {
       const [summary, distribution, purposes, comarcas, municipalities, coverage, socioProfiles] =
         await Promise.all([

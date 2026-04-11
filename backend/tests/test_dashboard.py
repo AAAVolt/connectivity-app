@@ -3,24 +3,27 @@
 from collections import namedtuple
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 from httpx import ASGITransport, AsyncClient
 
 from backend.main import app
 from backend.db import get_db
+from backend.api.cache import clear_all as clear_result_cache
 
 
 @pytest.fixture(autouse=True)
 def _mock_db():
-    """Override DB dependency with an async mock session."""
-    mock_session = AsyncMock()
+    """Override DB dependency with a sync mock session (DuckDBSession is sync)."""
+    clear_result_cache()
+    mock_session = MagicMock()
 
-    async def override():
+    def override():
         yield mock_session
 
     app.dependency_overrides[get_db] = override
     yield mock_session
     app.dependency_overrides.clear()
+    clear_result_cache()
 
 
 # -- /dashboard/summary -------------------------------------------------------
@@ -44,7 +47,7 @@ CountsRow = namedtuple(
 
 
 @pytest.mark.asyncio
-async def test_summary(_mock_db: AsyncMock) -> None:
+async def test_summary(_mock_db: MagicMock) -> None:
     main_result = MagicMock()
     main_result.one.return_value = SummaryRow(
         total_cells=5000,
@@ -56,12 +59,20 @@ async def test_summary(_mock_db: AsyncMock) -> None:
         median_score=58.0,
     )
 
-    counts_result = MagicMock()
-    counts_result.one.return_value = CountsRow(
-        dest_count=250, stop_count=1200, route_count=45, muni_count=112, comarca_count=7
-    )
+    # _safe_count calls db.execute() once per table (5 total)
+    def make_count_result(count: int) -> MagicMock:
+        r = MagicMock()
+        r.one.return_value = namedtuple("C", ["c"])(c=count)
+        return r
 
-    _mock_db.execute.side_effect = [main_result, counts_result]
+    _mock_db.execute.side_effect = [
+        main_result,
+        make_count_result(250),   # destinations
+        make_count_result(1200),  # gtfs_stops
+        make_count_result(45),    # gtfs_routes
+        make_count_result(112),   # municipalities
+        make_count_result(7),     # comarcas
+    ]
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -86,7 +97,7 @@ BucketRow = namedtuple("BucketRow", ["bucket", "cell_count", "population"])
 
 
 @pytest.mark.asyncio
-async def test_score_distribution(_mock_db: AsyncMock) -> None:
+async def test_score_distribution(_mock_db: MagicMock) -> None:
     result = MagicMock()
     result.fetchall.return_value = [
         BucketRow(bucket=1, cell_count=100, population=500.0),
@@ -125,7 +136,7 @@ TravelTimeRow = namedtuple("TravelTimeRow", ["mode", "purpose", "avg_tt"])
 
 
 @pytest.mark.asyncio
-async def test_purpose_breakdown(_mock_db: AsyncMock) -> None:
+async def test_purpose_breakdown(_mock_db: MagicMock) -> None:
     dt_result = MagicMock()
     dt_result.fetchall.return_value = [
         DestTypeRow("hospital", "Hospital"),
@@ -167,7 +178,7 @@ MuniRow = namedtuple(
 
 
 @pytest.mark.asyncio
-async def test_municipality_ranking(_mock_db: AsyncMock) -> None:
+async def test_municipality_ranking(_mock_db: MagicMock) -> None:
     result = MagicMock()
     result.fetchall.return_value = [
         MuniRow("Bilbao", "48020", 1200, 350000.0, 78.5, 80.1),
@@ -197,7 +208,7 @@ ComarcaRow = namedtuple(
 
 
 @pytest.mark.asyncio
-async def test_comarca_ranking(_mock_db: AsyncMock) -> None:
+async def test_comarca_ranking(_mock_db: MagicMock) -> None:
     result = MagicMock()
     result.fetchall.return_value = [
         ComarcaRow("GRAN BILBAO", "05", 5000, 800000.0, 70.0, 72.5),
@@ -238,7 +249,7 @@ CoverageRow = namedtuple(
 
 
 @pytest.mark.asyncio
-async def test_service_coverage(_mock_db: AsyncMock) -> None:
+async def test_service_coverage(_mock_db: MagicMock) -> None:
     dt_result = MagicMock()
     dt_result.fetchall.return_value = [
         DestTypeRow("hospital", "Hospital"),
@@ -284,7 +295,7 @@ async def test_service_coverage(_mock_db: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_summary_bad_departure_time(_mock_db: AsyncMock) -> None:
+async def test_summary_bad_departure_time(_mock_db: MagicMock) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
