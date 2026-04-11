@@ -9,6 +9,24 @@ steps:
       - '-t'
       - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:latest'
       - '.'
+
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'bizkaia-api'
+      - '--image=europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
+      - '--region=europe-southwest1'
+      - '--project=$PROJECT_ID'
+      - '--service-account=bizkaia-backend@$PROJECT_ID.iam.gserviceaccount.com'
+      - '--memory=2Gi'
+      - '--cpu=1'
+      - '--min-instances=0'
+      - '--max-instances=5'
+      - '--timeout=120'
+      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=bizkaia-conn-data,GCS_PREFIX=serving,ENVIRONMENT=production'
+      - '--allow-unauthenticated'
+
 images:
   - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
   - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:latest'
