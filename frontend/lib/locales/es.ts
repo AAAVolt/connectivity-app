@@ -626,12 +626,6 @@ export const es: Locale = {
   "map.perspective2d": "2D Plano",
   "map.perspective3d": "3D Inclinado",
   "map.3dView": "Vista 3D",
-  "map.3dEnable": "Extrusión de puntuación",
   "map.3dBuildings": "Edificios 3D",
   "map.3dTerrain": "Elevación del terreno",
-  "map.3dHeight": "Altura de extrusión",
-  "map.3dFlat": "Plano",
-  "map.3dTall": "Alto",
-  "map.3dHint": "Clic derecho + arrastrar para inclinar y rotar la vista libremente.",
-  "map.3dZoomNote": "Extrusión óptima a nivel comarcal. Aleja el zoom para ver el efecto 3D.",
 };

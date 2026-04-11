@@ -636,14 +636,8 @@ const _en = {
   "map.perspective2d": "2D Flat",
   "map.perspective3d": "3D Tilted",
   "map.3dView": "3D View",
-  "map.3dEnable": "Score extrusion",
   "map.3dBuildings": "3D Buildings",
   "map.3dTerrain": "Terrain elevation",
-  "map.3dHeight": "Extrusion height",
-  "map.3dFlat": "Flat",
-  "map.3dTall": "Tall",
-  "map.3dHint": "Right-click + drag to tilt and rotate the view freely.",
-  "map.3dZoomNote": "Extrusion best at district level. Zoom out for the 3D effect.",
 } as const;
 
 /** Locale type: same keys as English, but values are plain strings (not literals). */

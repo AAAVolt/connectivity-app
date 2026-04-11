@@ -65,14 +65,8 @@ const MAP_PANEL_KEYS = [
 
   // 3D
   "map.3dView",
-  "map.3dEnable",
   "map.3dBuildings",
   "map.3dTerrain",
-  "map.3dHeight",
-  "map.3dFlat",
-  "map.3dTall",
-  "map.3dHint",
-  "map.3dZoomNote",
 
   // Destinations
   "map.destinations",

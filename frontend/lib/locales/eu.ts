@@ -626,12 +626,6 @@ export const eu: Locale = {
   "map.perspective2d": "2D Laua",
   "map.perspective3d": "3D Okertua",
   "map.3dView": "3D Ikuspegia",
-  "map.3dEnable": "Puntuazio-estrusioa",
   "map.3dBuildings": "3D Eraikinak",
   "map.3dTerrain": "Lurrazal garaiera",
-  "map.3dHeight": "Estrusio altuera",
-  "map.3dFlat": "Laua",
-  "map.3dTall": "Altua",
-  "map.3dHint": "Eskuin-klik + arrastatu ikuspegia okertzeko eta biratzeko libreki.",
-  "map.3dZoomNote": "Estrusioa eskualde mailan da onena. Urrundu 3D efektua ikusteko.",
 };

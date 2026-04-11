@@ -175,14 +175,10 @@ export interface MapPanelProps {
   // 3D / Perspective
   perspective: Perspective;
   setPerspective: (p: Perspective) => void;
-  is3D: boolean;
-  setIs3D: React.Dispatch<React.SetStateAction<boolean>>;
   showBuildings: boolean;
   setShowBuildings: React.Dispatch<React.SetStateAction<boolean>>;
   showTerrain: boolean;
   setShowTerrain: React.Dispatch<React.SetStateAction<boolean>>;
-  extrusionHeight: number;
-  setExtrusionHeight: (h: number) => void;
   resolution: number;
 
   // Destinations

@@ -39,8 +39,8 @@ export function MapControlPanel(props: MapPanelProps) {
     baseLayers, toggleBaseLayer, fillOpacity, setFillOpacity,
     basemap, setBasemap,
     perspective, setPerspective,
-    is3D, setIs3D, showBuildings, setShowBuildings, showTerrain, setShowTerrain,
-    extrusionHeight, setExtrusionHeight, resolution,
+    showBuildings, setShowBuildings, showTerrain, setShowTerrain,
+    resolution,
     destToggles, toggleDestination,
     showRoutes, handleToggleRoutes,
     showStops, handleToggleStops,
@@ -355,7 +355,6 @@ export function MapControlPanel(props: MapPanelProps) {
             {/* Layer toggles */}
             <div className="space-y-0.5">
               {[
-                { checked: is3D, onChange: () => setIs3D((v) => !v), label: t("map.3dEnable") },
                 { checked: showBuildings, onChange: () => setShowBuildings((v) => !v), label: t("map.3dBuildings") },
                 { checked: showTerrain, onChange: () => setShowTerrain((v) => !v), label: t("map.3dTerrain") },
               ].map((item) => (
@@ -370,39 +369,6 @@ export function MapControlPanel(props: MapPanelProps) {
                 </label>
               ))}
             </div>
-
-            {is3D && (
-              <div className="mt-3 pt-3 border-t border-sidebar-border/60 space-y-3">
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] text-sidebar-foreground/60">{t("map.3dHeight")}</span>
-                    <span className="text-[10px] font-mono text-sidebar-foreground/60 tabular-nums">
-                      {extrusionHeight}m
-                    </span>
-                  </div>
-                  <Slider
-                    min={50}
-                    max={1000}
-                    step={50}
-                    value={[extrusionHeight]}
-                    onValueChange={([v]) => setExtrusionHeight(v)}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-[9px] text-sidebar-foreground/60 mt-1">
-                    <span>{t("map.3dFlat")}</span>
-                    <span>{t("map.3dTall")}</span>
-                  </div>
-                </div>
-                <p className="text-[10px] text-sidebar-foreground/60 leading-relaxed">
-                  {t("map.3dHint")}
-                </p>
-                {resolution <= 200 && (
-                  <p className="text-[10px] text-amber-600 leading-relaxed">
-                    {t("map.3dZoomNote")}
-                  </p>
-                )}
-              </div>
-            )}
           </MapPanelSection>
 
           {/* Destination markers */}
