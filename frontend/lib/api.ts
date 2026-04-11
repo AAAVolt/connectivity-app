@@ -29,7 +29,16 @@ export async function apiFetch<T>(
   const response = await fetch(`${API_BASE}${path}`, init);
 
   if (!response.ok) {
-    throw new Error(`API error: ${response.status} ${response.statusText}`);
+    const isClientError = response.status >= 400 && response.status < 500;
+    const errorPrefix = isClientError ? "Client error" : "Server error";
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // Response body not JSON — use statusText
+    }
+    throw new Error(`${errorPrefix} (${response.status}): ${detail}`);
   }
 
   return response.json() as Promise<T>;

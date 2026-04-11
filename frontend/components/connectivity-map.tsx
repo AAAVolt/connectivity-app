@@ -177,40 +177,51 @@ function applySocialPaint(map: MaplibreMap, layer: string) {
   map.setPaintProperty("social-fill", "fill-color", colorExpr);
 }
 
+/** Escape HTML special characters to prevent XSS in popup content. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /** Build consistent popup HTML for municipality clicks (both boundary & social-fill layers). */
 function buildMuniPopupHtml(
   name: string,
   p: Record<string, unknown> | null,
   t: (key: string) => string,
 ): string {
-  if (!p) return `<strong style="font-size:13px">${name}</strong>`;
+  const safeName = escapeHtml(name);
+  if (!p) return `<strong style="font-size:13px">${safeName}</strong>`;
 
   const val = (key: string, decimals: number, suffix = ""): string => {
     const v = p[key];
-    return v != null ? Number(v).toFixed(decimals) + suffix : "—";
+    return v != null ? escapeHtml(Number(v).toFixed(decimals) + suffix) : "—";
   };
   const pop = p.pop_total != null
-    ? Math.round(Number(p.pop_total)).toLocaleString()
+    ? escapeHtml(Math.round(Number(p.pop_total)).toLocaleString())
     : p.population != null
-      ? Math.round(Number(p.population)).toLocaleString()
+      ? escapeHtml(Math.round(Number(p.population)).toLocaleString())
       : "—";
 
   return (
-    `<strong style="font-size:13px">${name}</strong>` +
+    `<strong style="font-size:13px">${safeName}</strong>` +
     `<div style="margin-top:6px;font-size:11px;line-height:1.7">` +
-    `<div><b>${t("popup.population")}:</b> ${pop}</div>` +
-    `<div><b>${t("popup.connectivity")}:</b> ${val("weighted_avg_score", 1)}/100</div>` +
+    `<div><b>${escapeHtml(t("popup.population"))}:</b> ${pop}</div>` +
+    `<div><b>${escapeHtml(t("popup.connectivity"))}:</b> ${val("weighted_avg_score", 1)}/100</div>` +
     `<div style="border-top:1px solid #eee;margin:3px 0;padding-top:3px">` +
-    `<div><b>${t("popup.elderly")}:</b> ${val("pct_65_plus", 1, "%")}</div>` +
-    `<div><b>${t("popup.youth")}:</b> ${val("pct_0_17", 1, "%")}</div>` +
-    `<div><b>${t("popup.youngAdults")}:</b> ${val("pct_18_25", 1, "%")}</div>` +
+    `<div><b>${escapeHtml(t("popup.elderly"))}:</b> ${val("pct_65_plus", 1, "%")}</div>` +
+    `<div><b>${escapeHtml(t("popup.youth"))}:</b> ${val("pct_0_17", 1, "%")}</div>` +
+    `<div><b>${escapeHtml(t("popup.youngAdults"))}:</b> ${val("pct_18_25", 1, "%")}</div>` +
     `</div>` +
     `<div style="border-top:1px solid #eee;margin:3px 0;padding-top:3px">` +
-    `<div><b>${t("popup.incomeIndex")}:</b> ${val("renta_index", 1)}</div>` +
-    `<div><b>${t("popup.carsPerInhab")}:</b> ${val("vehicles_per_inhab", 2)}</div>` +
+    `<div><b>${escapeHtml(t("popup.incomeIndex"))}:</b> ${val("renta_index", 1)}</div>` +
+    `<div><b>${escapeHtml(t("popup.carsPerInhab"))}:</b> ${val("vehicles_per_inhab", 2)}</div>` +
     `</div>` +
     `<div style="border-top:1px solid #eee;margin:3px 0;padding-top:3px">` +
-    `<div><b>${t("popup.vulnerability")}:</b> ${val("vulnerability", 2)}</div>` +
+    `<div><b>${escapeHtml(t("popup.vulnerability"))}:</b> ${val("vulnerability", 2)}</div>` +
     `</div>` +
     `</div>`
   );
@@ -1023,7 +1034,7 @@ export default function ConnectivityMap() {
             if (!e.features?.[0]) return;
             const p = e.features[0].properties;
             new maplibregl.Popup().setLngLat(e.lngLat)
-              .setHTML(`<strong>${p?.name ?? ""}</strong><br/><span style="color:#666;font-size:12px">${p?.type_label ?? dt.label}</span>`)
+              .setHTML(`<strong>${escapeHtml(String(p?.name ?? ""))}</strong><br/><span style="color:#666;font-size:12px">${escapeHtml(String(p?.type_label ?? dt.label))}</span>`)
               .addTo(map);
           });
           map.on("mouseenter", dt.id, () => { map.getCanvas().style.cursor = "pointer"; });
@@ -1034,7 +1045,7 @@ export default function ConnectivityMap() {
           if (!e.features?.[0]) return;
           const p = e.features[0].properties;
           new maplibregl.Popup().setLngLat(e.lngLat)
-            .setHTML(`<strong>${p?.stop_name ?? "Stop"}</strong><br/><span style="color:#666;font-size:12px">${p?.operator ?? ""}</span>`)
+            .setHTML(`<strong>${escapeHtml(String(p?.stop_name ?? "Stop"))}</strong><br/><span style="color:#666;font-size:12px">${escapeHtml(String(p?.operator ?? ""))}</span>`)
             .addTo(map);
         });
 
@@ -1042,7 +1053,7 @@ export default function ConnectivityMap() {
           if (!e.features?.[0]) return;
           const p = e.features[0].properties;
           new maplibregl.Popup().setLngLat(e.lngLat)
-            .setHTML(`<strong>${p?.route_name ?? p?.route_id ?? "Route"}</strong><br/><span style="color:#666;font-size:12px">${p?.operator ?? ""}</span>`)
+            .setHTML(`<strong>${escapeHtml(String(p?.route_name ?? p?.route_id ?? "Route"))}</strong><br/><span style="color:#666;font-size:12px">${escapeHtml(String(p?.operator ?? ""))}</span>`)
             .addTo(map);
         });
 
@@ -1062,7 +1073,7 @@ export default function ConnectivityMap() {
               .addTo(map);
           } catch {
             new maplibregl.Popup().setLngLat(e.lngLat)
-              .setHTML(`<strong>${muniName}</strong>`)
+              .setHTML(`<strong>${escapeHtml(muniName)}</strong>`)
               .addTo(map);
           }
         });
@@ -1071,7 +1082,7 @@ export default function ConnectivityMap() {
           if (!e.features?.[0]) return;
           const p = e.features[0].properties;
           new maplibregl.Popup().setLngLat(e.lngLat)
-            .setHTML(`<strong>${p?.name ?? ""}</strong><br/><span style="color:#666;font-size:12px">${p?.muni_name ?? ""}</span>`)
+            .setHTML(`<strong>${escapeHtml(String(p?.name ?? ""))}</strong><br/><span style="color:#666;font-size:12px">${escapeHtml(String(p?.muni_name ?? ""))}</span>`)
             .addTo(map);
         });
 
@@ -1081,9 +1092,9 @@ export default function ConnectivityMap() {
           const dph = Number(p?.departures_per_hour ?? 0).toFixed(1);
           new maplibregl.Popup().setLngLat(e.lngLat)
             .setHTML(
-              `<strong>${p?.stop_name ?? "Stop"}</strong><br/>` +
-              `<span style="color:#666;font-size:12px">${p?.operator ?? ""}</span><br/>` +
-              `<span style="font-size:12px"><b>${dph}</b> dep/hr &middot; ${p?.departures ?? 0} departures</span>`,
+              `<strong>${escapeHtml(String(p?.stop_name ?? "Stop"))}</strong><br/>` +
+              `<span style="color:#666;font-size:12px">${escapeHtml(String(p?.operator ?? ""))}</span><br/>` +
+              `<span style="font-size:12px"><b>${escapeHtml(dph)}</b> dep/hr &middot; ${escapeHtml(String(p?.departures ?? 0))} departures</span>`,
             )
             .addTo(map);
         });

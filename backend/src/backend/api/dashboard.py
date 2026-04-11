@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import re
+
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel
 
 from backend.api.cache import get_cached, set_cached
@@ -136,10 +138,22 @@ def get_summary(
     )
     main = result.one()
 
-    # Count auxiliary tables — some may not exist in demo/minimal setups
-    def _safe_count(table: str, where: str = "") -> int:
+    # Count auxiliary tables — some may not exist in demo/minimal setups.
+    # Table names are validated against a whitelist to prevent SQL injection.
+    _COUNTABLE_TABLES: dict[str, str] = {
+        "destinations": "tenant_id = $tid",
+        "gtfs_stops": "",
+        "gtfs_routes": "",
+        "municipalities": "tenant_id = $tid",
+        "comarcas": "tenant_id = $tid",
+    }
+
+    def _safe_count(table: str) -> int:
+        if table not in _COUNTABLE_TABLES:
+            raise ValueError(f"Table not in whitelist: {table}")
+        where = _COUNTABLE_TABLES[table]
         try:
-            q = f"SELECT COUNT(*) AS c FROM {table}"
+            q = f"SELECT COUNT(*) AS c FROM {table}"  # noqa: S608 — table validated above
             params: dict[str, Any] = {}
             if where:
                 q += f" WHERE {where}"
@@ -148,16 +162,13 @@ def get_summary(
         except (duckdb.CatalogException, duckdb.BinderException):
             # Table doesn't exist in this dataset — expected in minimal setups
             return 0
-        except Exception:
-            _logger.warning("_safe_count failed for table=%s", table, exc_info=True)
-            return 0
 
     class _Counts:
-        dest_count = _safe_count("destinations", "tenant_id = $tid")
+        dest_count = _safe_count("destinations")
         stop_count = _safe_count("gtfs_stops")
         route_count = _safe_count("gtfs_routes")
-        muni_count = _safe_count("municipalities", "tenant_id = $tid")
-        comarca_count = _safe_count("comarcas", "tenant_id = $tid")
+        muni_count = _safe_count("municipalities")
+        comarca_count = _safe_count("comarcas")
 
     c = _Counts()
 
@@ -714,10 +725,23 @@ def _area_detail(
     return result_detail
 
 
+_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
+
+
+def _validate_area_code(code: str, label: str = "code") -> str:
+    """Validate area codes against a safe character set."""
+    if not _CODE_RE.match(code):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {label}: must be 1-20 alphanumeric characters.",
+        )
+    return code
+
+
 @router.get("/comarca/{comarca_code}", response_model=AreaDetail)
 def get_comarca_detail(
-    comarca_code: str,
-    response: Response,
+    comarca_code: str = Path(..., min_length=1, max_length=20),
+    response: Response = None,  # type: ignore[assignment]
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
@@ -725,6 +749,7 @@ def get_comarca_detail(
     """Full detail for a specific comarca."""
     response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
+    _validate_area_code(comarca_code, "comarca_code")
     return _area_detail(
         table="comarcas",
         code_col="comarca_code",
@@ -737,8 +762,8 @@ def get_comarca_detail(
 
 @router.get("/municipality/{muni_code}", response_model=AreaDetail)
 def get_municipality_detail(
-    muni_code: str,
-    response: Response,
+    muni_code: str = Path(..., min_length=1, max_length=20),
+    response: Response = None,  # type: ignore[assignment]
     departure_time: str = Query(DEFAULT_DEPARTURE_TIME),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
@@ -746,6 +771,7 @@ def get_municipality_detail(
     """Full detail for a specific municipality."""
     response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
+    _validate_area_code(muni_code, "muni_code")
     return _area_detail(
         table="municipalities",
         code_col="muni_code",

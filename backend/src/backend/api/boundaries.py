@@ -120,9 +120,8 @@ def get_nucleos(
     db: DuckDBSession = Depends(get_db),
 ) -> Response:
     """Return EUSTAT nucleo (settlement) boundaries as GeoJSON."""
-    where = "tenant_id = $tid"
-    if not include_diseminado:
-        where += " AND nucleo_num != '99'"
+    params: dict[str, object] = {"tid": tenant.tenant_id}
+    diseminado_filter = "" if include_diseminado else "AND nucleo_num != '99'"
 
     result = db.execute(
         f"""
@@ -130,10 +129,10 @@ def get_nucleos(
                muni_code, muni_name,
                ST_AsGeoJSON(geom) AS geometry
         FROM nucleos
-        WHERE {where}
+        WHERE tenant_id = $tid {diseminado_filter}
         ORDER BY muni_name, name
         """,
-        {"tid": tenant.tenant_id},
+        params,
     )
 
     features = [

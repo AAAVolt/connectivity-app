@@ -86,7 +86,7 @@ cat <<EOF
        --min-instances=0 \\
        --max-instances=5 \\
        --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production" \\
-       --allow-unauthenticated
+       --no-allow-unauthenticated
 
   3. Upload serving data:
      gcloud storage cp data/serving/*.parquet gs://${BUCKET}/serving/

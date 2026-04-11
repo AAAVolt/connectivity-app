@@ -1,10 +1,11 @@
 """Bizkaia Connectivity MVP – FastAPI backend."""
 
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -46,9 +47,22 @@ def create_app() -> FastAPI:
         allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
         allow_origin_regex=settings.cors_origin_regex,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Tenant-ID"],
     )
+
+    @application.middleware("http")
+    async def security_headers(request: Request, call_next):  # type: ignore[type-arg]
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # Request ID for tracing
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     application.include_router(health_router)
     application.include_router(boundaries_router)

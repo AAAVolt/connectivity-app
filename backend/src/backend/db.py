@@ -106,7 +106,10 @@ class DuckDBSession:
                 [table_name],
             )
             return cur.fetchone()[0] > 0
+        except duckdb.CatalogException:
+            return False
         except duckdb.Error:
+            logger.warning("has_table(%s) failed unexpectedly", table_name, exc_info=True)
             return False
 
 

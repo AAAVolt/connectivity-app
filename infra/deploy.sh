@@ -33,8 +33,8 @@ gcloud run deploy "${SERVICE}" \
   --min-instances=0 \
   --max-instances=5 \
   --timeout=120 \
-  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=local,JWT_SECRET=${JWT_SECRET}" \
-  --allow-unauthenticated
+  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,JWT_SECRET=${JWT_SECRET},CORS_ORIGINS=${CORS_ORIGINS:-}" \
+  --no-allow-unauthenticated
 
 URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --format="value(status.url)")
 echo ""

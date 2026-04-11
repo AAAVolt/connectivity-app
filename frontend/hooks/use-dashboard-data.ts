@@ -38,7 +38,10 @@ export function useDashboardData(departureTime = "08:00") {
           apiFetch<AreaRanking[]>(`/dashboard/municipality-ranking?departure_time=${departureTime}`),
           apiFetch<ServiceCoverage[]>(`/dashboard/service-coverage?departure_time=${departureTime}`),
           apiFetch<MunicipalitySocioProfile[]>("/sociodemographic/profiles").catch(
-            () => [] as MunicipalitySocioProfile[],
+            (err) => {
+              console.warn("Failed to load socio profiles, using empty fallback:", err);
+              return [] as MunicipalitySocioProfile[];
+            },
           ),
         ]);
       return { summary, distribution, purposes, comarcas, municipalities, coverage, socioProfiles };

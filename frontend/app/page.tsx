@@ -558,14 +558,14 @@ function AreaAnalysisPanel({
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b text-muted-foreground">
-                      <th className="py-2 text-left font-medium">{t("detailTable.service")}</th>
-                      <th className="py-2 text-right font-medium">{t("detailTable.score")}</th>
-                      <th className="py-2 text-right font-medium">{t("detailTable.bizkaiaAvg")}</th>
-                      <th className="py-2 text-right font-medium">{t("detailTable.delta")}</th>
-                      <th className="py-2 text-right font-medium">{t("detailTable.travelMin")}</th>
-                      <th className="py-2 text-right font-medium">{t("detailTable.coverage30")}</th>
-                      <th className="py-2 text-right font-medium">{t("detailTable.unreached30")}</th>
+                    <tr className="border-b bg-muted/40">
+                      <th className="px-3 py-2 text-left font-medium text-foreground">{t("detailTable.service")}</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("detailTable.score")}</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("detailTable.bizkaiaAvg")}</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("detailTable.delta")}</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("detailTable.travelMin")}</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("detailTable.coverage30")}</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("detailTable.unreached30")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -582,17 +582,17 @@ function AreaAnalysisPanel({
                             className={`border-b last:border-0 cursor-pointer hover:bg-accent/50 ${selectedPurpose === s.purpose ? "bg-accent/30" : ""}`}
                             onClick={() => setSelectedPurpose(selectedPurpose === s.purpose ? null : s.purpose)}
                           >
-                            <td className="py-2 font-medium">{s.purpose_label}</td>
-                            <td className="py-2 text-right font-mono">{fmt(s.weighted_avg_score)}</td>
-                            <td className="py-2 text-right font-mono text-muted-foreground">{fmt(regionAvg)}</td>
-                            <td className={`py-2 text-right font-mono font-medium ${delta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                            <td className="px-3 py-2 font-medium">{s.purpose_label}</td>
+                            <td className="px-3 py-2 text-right font-mono">{fmt(s.weighted_avg_score)}</td>
+                            <td className="px-3 py-2 text-right font-mono text-muted-foreground">{fmt(regionAvg)}</td>
+                            <td className={`px-3 py-2 text-right font-mono font-medium ${delta >= 0 ? "text-green-600" : "text-red-600"}`}>
                               {delta >= 0 ? "+" : ""}{fmt(delta)}
                             </td>
-                            <td className="py-2 text-right font-mono">{fmt(s.avg_travel_time)}</td>
-                            <td className="py-2 text-right font-mono">
+                            <td className="px-3 py-2 text-right font-mono">{fmt(s.avg_travel_time)}</td>
+                            <td className="px-3 py-2 text-right font-mono">
                               {cov ? `${fmt(cov.pct_pop_30min)}%` : "\u2014"}
                             </td>
-                            <td className="py-2 text-right font-mono">
+                            <td className="px-3 py-2 text-right font-mono">
                               {unreached > 50 ? (
                                 <span className="text-red-600">{fmtPop(unreached)}</span>
                               ) : (
@@ -1241,17 +1241,17 @@ function OverviewTab({
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b text-muted-foreground">
-                    <th className="py-2 text-left font-medium">{t("equity.municipality")}</th>
-                    <th className="py-2 text-right font-medium">{t("equity.population")}</th>
-                    <th className="py-2 text-right font-medium">{t("equity.score")}</th>
-                    <th className="py-2 text-right font-medium">
+                  <tr className="border-b bg-muted/40">
+                    <th className="px-3 py-2 text-left font-medium text-foreground">{t("equity.municipality")}</th>
+                    <th className="px-3 py-2 text-right font-medium text-foreground">{t("equity.population")}</th>
+                    <th className="px-3 py-2 text-right font-medium text-foreground">{t("equity.score")}</th>
+                    <th className="px-3 py-2 text-right font-medium text-foreground">
                       {t("equity.gapVsMedian")}
                     </th>
-                    <th className="py-2 text-right font-medium">{t("dash.socio.elderly")}</th>
-                    <th className="py-2 text-right font-medium">{t("dash.socio.income")}</th>
-                    <th className="py-2 text-right font-medium">{t("dash.socio.cars")}</th>
-                    <th className="py-2 text-left font-medium pl-4">
+                    <th className="px-3 py-2 text-right font-medium text-foreground">{t("dash.socio.elderly")}</th>
+                    <th className="px-3 py-2 text-right font-medium text-foreground">{t("dash.socio.income")}</th>
+                    <th className="px-3 py-2 text-right font-medium text-foreground">{t("dash.socio.cars")}</th>
+                    <th className="px-3 py-2 text-left font-medium text-foreground">
                       {t("equity.connectivityLevel")}
                     </th>
                   </tr>
@@ -1267,34 +1267,34 @@ function OverviewTab({
                         key={m.code}
                         className="border-b last:border-0"
                       >
-                        <td className="py-2 font-medium">{m.name}</td>
-                        <td className="py-2 text-right font-mono">
+                        <td className="px-3 py-2 font-medium">{m.name}</td>
+                        <td className="px-3 py-2 text-right font-mono">
                           {fmtPop(m.population)}
                         </td>
-                        <td className="py-2 text-right font-mono">
+                        <td className="px-3 py-2 text-right font-mono">
                           {fmt(score)}
                         </td>
-                        <td className="py-2 text-right font-mono text-red-600">
+                        <td className="px-3 py-2 text-right font-mono text-red-600">
                           -{fmt(gap)}
                         </td>
-                        <td className="py-2 text-right font-mono">
+                        <td className="px-3 py-2 text-right font-mono">
                           {socio?.pct_65_plus != null ? (
                             <span className={(socio.pct_65_plus ?? 0) > 28 ? "text-red-600 font-medium" : ""}>
                               {fmt(socio.pct_65_plus)}%
                             </span>
                           ) : "—"}
                         </td>
-                        <td className="py-2 text-right font-mono">
+                        <td className="px-3 py-2 text-right font-mono">
                           {socio?.renta_index != null ? (
                             <span className={(socio.renta_index ?? 0) < 90 ? "text-red-600 font-medium" : ""}>
                               {fmt(socio.renta_index)}
                             </span>
                           ) : "—"}
                         </td>
-                        <td className="py-2 text-right font-mono">
+                        <td className="px-3 py-2 text-right font-mono">
                           {socio?.vehicles_per_inhab != null ? fmt(socio.vehicles_per_inhab, 2) : "—"}
                         </td>
-                        <td className="py-2 pl-4 w-40">
+                        <td className="px-3 py-2 w-40">
                           <div className="h-2 bg-secondary rounded-full overflow-hidden">
                             <div
                               className="h-full rounded-full"

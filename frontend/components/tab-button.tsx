@@ -13,7 +13,7 @@ export function TabButton({ active, onClick, icon: Icon, children }: TabButtonPr
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
         active
           ? "border-primary text-foreground"
           : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"

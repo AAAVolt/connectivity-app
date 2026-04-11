@@ -153,7 +153,7 @@ function VulnerabilityTab({ data }: { data: VulnProfile[] }) {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>{t("ctx.vuln.mostVulnerable")}</CardDescription>
-            <CardTitle className="text-lg text-red-600">
+            <CardTitle className="text-2xl tabular-nums text-red-600">
               {data[0]?.name ?? "—"}
             </CardTitle>
           </CardHeader>
@@ -167,7 +167,7 @@ function VulnerabilityTab({ data }: { data: VulnProfile[] }) {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>{t("ctx.vuln.highVulnMunis")}</CardDescription>
-            <CardTitle className="text-lg text-red-600">
+            <CardTitle className="text-2xl tabular-nums text-red-600">
               {highVuln.length}
             </CardTitle>
           </CardHeader>
@@ -181,7 +181,7 @@ function VulnerabilityTab({ data }: { data: VulnProfile[] }) {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>{t("ctx.vuln.avgElderlyHigh")}</CardDescription>
-            <CardTitle className="text-lg">
+            <CardTitle className="text-2xl tabular-nums">
               {fmt(avgElderlyHigh)}%
             </CardTitle>
           </CardHeader>
@@ -195,7 +195,7 @@ function VulnerabilityTab({ data }: { data: VulnProfile[] }) {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>{t("ctx.vuln.avgCarsHigh")}</CardDescription>
-            <CardTitle className="text-lg">
+            <CardTitle className="text-2xl tabular-nums">
               {fmt(avgCarsHigh, 2)}
             </CardTitle>
           </CardHeader>
@@ -217,26 +217,26 @@ function VulnerabilityTab({ data }: { data: VulnProfile[] }) {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-muted-foreground">
-                  <th className="py-2 text-left font-medium">{t("ctx.vuln.municipality")}</th>
-                  <th className="py-2 text-right font-medium">{t("ctx.vuln.population")}</th>
-                  <th className="py-2 text-right font-medium">{t("ctx.vuln.score")}</th>
-                  <th className="py-2 text-right font-medium">{t("ctx.vuln.elderly")}</th>
-                  <th className="py-2 text-right font-medium">{t("ctx.vuln.income")}</th>
-                  <th className="py-2 text-right font-medium">{t("ctx.vuln.cars")}</th>
-                  <th className="py-2 text-center font-medium">{t("ctx.vuln.vulnScore")}</th>
+                <tr className="border-b bg-muted/40">
+                  <th className="px-3 py-2 text-left font-medium text-foreground">{t("ctx.vuln.municipality")}</th>
+                  <th className="px-3 py-2 text-right font-medium text-foreground">{t("ctx.vuln.population")}</th>
+                  <th className="px-3 py-2 text-right font-medium text-foreground">{t("ctx.vuln.score")}</th>
+                  <th className="px-3 py-2 text-right font-medium text-foreground">{t("ctx.vuln.elderly")}</th>
+                  <th className="px-3 py-2 text-right font-medium text-foreground">{t("ctx.vuln.income")}</th>
+                  <th className="px-3 py-2 text-right font-medium text-foreground">{t("ctx.vuln.cars")}</th>
+                  <th className="px-3 py-2 text-center font-medium text-foreground">{t("ctx.vuln.vulnScore")}</th>
                 </tr>
               </thead>
               <tbody>
                 {data.slice(0, 30).map((d) => (
                   <tr key={d.muni_code} className="border-b last:border-0">
-                    <td className="py-2 font-medium">{d.name}</td>
-                    <td className="py-2 text-right font-mono">{fmtPop(d.population)}</td>
-                    <td className="py-2 text-right font-mono">{fmt(d.weighted_avg_score)}</td>
-                    <td className="py-2 text-right font-mono">{fmt(d.pct_65_plus)}%</td>
-                    <td className="py-2 text-right font-mono">{fmt(d.renta_index)}</td>
-                    <td className="py-2 text-right font-mono">{fmt(d.vehicles_per_inhab, 2)}</td>
-                    <td className="py-2 text-center">
+                    <td className="px-3 py-2 font-medium">{d.name}</td>
+                    <td className="px-3 py-2 text-right font-mono">{fmtPop(d.population)}</td>
+                    <td className="px-3 py-2 text-right font-mono">{fmt(d.weighted_avg_score)}</td>
+                    <td className="px-3 py-2 text-right font-mono">{fmt(d.pct_65_plus)}%</td>
+                    <td className="px-3 py-2 text-right font-mono">{fmt(d.renta_index)}</td>
+                    <td className="px-3 py-2 text-right font-mono">{fmt(d.vehicles_per_inhab, 2)}</td>
+                    <td className="px-3 py-2 text-center">
                       <span
                         className="inline-block rounded px-2 py-0.5 text-xs font-bold text-white"
                         style={{ backgroundColor: vulnColor(d.vuln_level) }}
@@ -712,20 +712,20 @@ function FrequencyTab() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b text-muted-foreground">
-                      <th className="py-2 text-left font-medium">{t("ctx.freq.operator")}</th>
-                      <th className="py-2 text-left font-medium">Stop</th>
-                      <th className="py-2 text-right font-medium">{t("ctx.freq.departures")}</th>
-                      <th className="py-2 text-right font-medium">{t("ctx.freq.dph")}</th>
+                    <tr className="border-b bg-muted/40">
+                      <th className="px-3 py-2 text-left font-medium text-foreground">{t("ctx.freq.operator")}</th>
+                      <th className="px-3 py-2 text-left font-medium text-foreground">Stop</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("ctx.freq.departures")}</th>
+                      <th className="px-3 py-2 text-right font-medium text-foreground">{t("ctx.freq.dph")}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {topStops.map((s, i) => (
                       <tr key={`${s.operator}-${s.stop_id}-${i}`} className="border-b last:border-0">
-                        <td className="py-2">{s.operator}</td>
-                        <td className="py-2 font-medium">{s.stop_name ?? s.stop_id}</td>
-                        <td className="py-2 text-right font-mono">{s.departures}</td>
-                        <td className="py-2 text-right font-mono font-medium">{fmt(s.departures_per_hour, 1)}</td>
+                        <td className="px-3 py-2">{s.operator}</td>
+                        <td className="px-3 py-2 font-medium">{s.stop_name ?? s.stop_id}</td>
+                        <td className="px-3 py-2 text-right font-mono">{s.departures}</td>
+                        <td className="px-3 py-2 text-right font-mono font-medium">{fmt(s.departures_per_hour, 1)}</td>
                       </tr>
                     ))}
                   </tbody>

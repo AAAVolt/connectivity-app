@@ -38,5 +38,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest pytest-asyncio httpx && pip install -e .
+      - run: pip install pytest pytest-asyncio httpx pip-audit && pip install -e .
       - run: python -m pytest -x --tb=short
+      - name: Audit Python dependencies
+        run: pip-audit --strict
+
+  dependency-review:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4

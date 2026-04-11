@@ -7,8 +7,9 @@ for the dashboard enrichment layer.
 from __future__ import annotations
 
 import json
+import re
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from backend.api.cache import get_cached, set_cached
@@ -185,15 +186,23 @@ def get_car_ownership(
     return [MunicipalityCarOwnership(**row._mapping) for row in result.fetchall()]
 
 
+_TIME_WINDOW_RE = re.compile(r"^\d{2}:\d{2}-\d{2}:\d{2}$")
+
+
 @router.get("/frequency/geojson", response_model=FrequencyGeoJSON)
 def get_frequency_geojson(
     response: Response,
-    time_window: str = Query("07:00-09:00", description="Time window"),
-    min_dph: float = Query(0, description="Min departures/hour filter"),
+    time_window: str = Query("07:00-09:00", description="Time window (HH:MM-HH:MM)"),
+    min_dph: float = Query(0, ge=0, le=1000, description="Min departures/hour filter"),
     db: DuckDBSession = Depends(get_db),
     tenant: TenantContext = Depends(get_tenant),
 ) -> FrequencyGeoJSON:
     """Return stop frequencies as GeoJSON for map overlay."""
+    if not _TIME_WINDOW_RE.match(time_window):
+        raise HTTPException(
+            status_code=400,
+            detail="time_window must be in HH:MM-HH:MM format.",
+        )
     response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     if not db.has_table("stop_frequency"):
         return FrequencyGeoJSON(type="FeatureCollection", features=[])

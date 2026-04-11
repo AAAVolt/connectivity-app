@@ -40,8 +40,13 @@ RUN R -e " \
   remotes::install_version('r5r',       version='2.3',     repos='https://cloud.r-project.org/'); \
 "
 
+RUN groupadd -r r5r && useradd -r -g r5r -d /r5r r5r
+
 WORKDIR /r5r
 COPY r5r/scripts/ /r5r/scripts/
 COPY r5r/config/ /r5r/config/
+
+RUN chown -R r5r:r5r /r5r
+USER r5r
 
 CMD ["Rscript", "/r5r/scripts/compute_travel_matrices.R"]

@@ -101,7 +101,7 @@ export function AppSidebar() {
                   href === "/" ? pathname === "/" : pathname.startsWith(href);
                 return (
                   <SidebarMenuItem key={href}>
-                    <SidebarMenuButton asChild isActive={active} tooltip={t(key)} className="text-[12px]">
+                    <SidebarMenuButton asChild isActive={active} tooltip={t(key)} className="text-xs">
                       <Link href={href} onMouseEnter={() => handleNavHover(href)}>
                         <Icon className="size-4" />
                         <span>{t(key)}</span>
@@ -121,7 +121,7 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <SidebarMenuButton tooltip={t("sidebar.language")} className="text-[12px]">
+                <SidebarMenuButton tooltip={t("sidebar.language")} className="text-xs">
                   <Languages className="size-4" />
                   <span>{currentLang.label}</span>
                 </SidebarMenuButton>
@@ -131,9 +131,9 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     key={l.code}
                     onClick={() => setLang(l.code)}
-                    className={lang === l.code ? "bg-accent" : ""}
+                    className={`text-xs ${lang === l.code ? "bg-accent" : ""}`}
                   >
-                    <span className="mr-2 text-base">
+                    <span className="mr-2 text-sm">
                       {l.img ? (
                         <Image
                           src={l.img}

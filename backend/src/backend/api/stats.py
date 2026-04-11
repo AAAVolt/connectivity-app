@@ -1,13 +1,17 @@
 """Area statistics endpoint."""
 
 import json
+import logging
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.api.schemas import AreaStatsRequest, AreaStatsResponse
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.db import DuckDBSession, get_db
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -25,33 +29,40 @@ def get_area_stats(
     """
     geojson_str = json.dumps(request.geometry)
 
-    result = db.execute(
-        """
-        WITH area AS (
-            SELECT ST_GeomFromGeoJSON($geojson) AS geom
-        ),
-        cells_in_area AS (
-            SELECT gc.id, gc.population, cs.combined_score_normalized
-            FROM grid_cells gc
-            LEFT JOIN combined_scores cs
-                ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
-            JOIN area a ON ST_Intersects(gc.centroid, a.geom)
-            WHERE gc.tenant_id = $tid
+    try:
+        result = db.execute(
+            """
+            WITH area AS (
+                SELECT ST_GeomFromGeoJSON($geojson) AS geom
+            ),
+            cells_in_area AS (
+                SELECT gc.id, gc.population, cs.combined_score_normalized
+                FROM grid_cells gc
+                LEFT JOIN combined_scores cs
+                    ON cs.cell_id = gc.id AND cs.tenant_id = gc.tenant_id
+                JOIN area a ON ST_Intersects(gc.centroid, a.geom)
+                WHERE gc.tenant_id = $tid
+            )
+            SELECT
+                COUNT(*)                      AS cell_count,
+                COALESCE(SUM(population), 0)  AS population,
+                AVG(combined_score_normalized) AS avg_score,
+                CASE
+                    WHEN SUM(population) > 0 THEN
+                        SUM(population * COALESCE(combined_score_normalized, 0))
+                        / SUM(population)
+                    ELSE NULL
+                END AS weighted_avg_score
+            FROM cells_in_area
+            """,
+            {"geojson": geojson_str, "tid": tenant.tenant_id},
         )
-        SELECT
-            COUNT(*)                      AS cell_count,
-            COALESCE(SUM(population), 0)  AS population,
-            AVG(combined_score_normalized) AS avg_score,
-            CASE
-                WHEN SUM(population) > 0 THEN
-                    SUM(population * COALESCE(combined_score_normalized, 0))
-                    / SUM(population)
-                ELSE NULL
-            END AS weighted_avg_score
-        FROM cells_in_area
-        """,
-        {"geojson": geojson_str, "tid": tenant.tenant_id},
-    )
+    except duckdb.Error as exc:
+        _logger.warning("Invalid GeoJSON in /stats/area: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid geometry: could not parse the provided GeoJSON.",
+        ) from exc
     row = result.one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="No cells found in the given area")

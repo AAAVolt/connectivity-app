@@ -25,15 +25,15 @@ import { useTranslation } from "@/lib/i18n";
  */
 function RichText({ html, className }: { html: string; className?: string }) {
   // DOMPurify v3 exports a factory in Node.js (no window) — guard for SSR.
-  // Locale strings are trusted internal data, so passing raw html during SSR is safe;
-  // the client re-render still sanitises.
+  // When DOMPurify is unavailable (SSR), strip all HTML tags as a safe fallback
+  // instead of rendering raw HTML.
   const clean =
     typeof DOMPurify.sanitize === "function"
       ? DOMPurify.sanitize(html, {
           ALLOWED_TAGS: ["strong", "em", "sub", "sup", "br", "b", "i"],
           ALLOWED_ATTR: [],
         })
-      : html;
+      : html.replace(/<[^>]*>/g, "");
   return <span className={className} dangerouslySetInnerHTML={{ __html: clean }} />;
 }
 

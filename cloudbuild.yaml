@@ -25,7 +25,7 @@ steps:
       - '--max-instances=5'
       - '--timeout=120'
       - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=bizkaia-conn-data,GCS_PREFIX=serving,ENVIRONMENT=production'
-      - '--allow-unauthenticated'
+      - '--no-allow-unauthenticated'
 
 images:
   - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
