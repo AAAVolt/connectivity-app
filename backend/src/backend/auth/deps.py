@@ -4,7 +4,8 @@ import logging
 import time
 
 from fastapi import Depends, Header, HTTPException, status
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 
 from backend.auth.schemas import MAX_TOKEN_TTL_SECONDS, TenantContext, TokenPayload
 from backend.config import Settings, get_settings
@@ -37,7 +38,7 @@ def get_tenant(
             token, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
         )
         token_data = TokenPayload(**payload)
-    except (JWTError, ValueError) as exc:
+    except (PyJWTError, ValueError) as exc:
         _logger.warning("Auth failed: invalid token — %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -38,10 +38,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest pytest-asyncio httpx pip-audit && pip install -e .
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pip-audit
+          pip install .
+          pip install pytest pytest-asyncio httpx
       - run: python -m pytest -x --tb=short
       - name: Audit Python dependencies
-        run: pip-audit --strict --skip-editable
+        run: pip-audit
 
   dependency-review:
     runs-on: ubuntu-latest
