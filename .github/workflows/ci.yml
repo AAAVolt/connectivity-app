@@ -41,7 +41,7 @@ jobs:
       - run: pip install pytest pytest-asyncio httpx pip-audit && pip install -e .
       - run: python -m pytest -x --tb=short
       - name: Audit Python dependencies
-        run: pip-audit --strict
+        run: pip-audit --strict --skip-editable
 
   dependency-review:
     runs-on: ubuntu-latest
