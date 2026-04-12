@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 function MapLoading() {
   return (
@@ -21,7 +22,9 @@ const ConnectivityMap = dynamic(
 export default function MapPage() {
   return (
     <div className="h-full relative">
-      <ConnectivityMap />
+      <ErrorBoundary label="Connectivity Map">
+        <ConnectivityMap />
+      </ErrorBoundary>
     </div>
   );
 }

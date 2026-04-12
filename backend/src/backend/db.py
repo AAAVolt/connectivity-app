@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -87,30 +88,38 @@ class DuckDBResult:
 
 
 class DuckDBSession:
-    """Thin session matching the interface our routers expect."""
+    """Thread-safe session matching the interface our routers expect.
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+    DuckDB connections are not safe for concurrent access from multiple
+    threads.  FastAPI may serve requests on different threads, so we
+    serialise every query behind a lock.
+    """
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection, lock: threading.Lock) -> None:
         self._conn = conn
+        self._lock = lock
 
     def execute(self, sql: str, params: dict[str, Any] | None = None) -> DuckDBResult:
-        cur = self._conn.cursor()
-        cur.execute(sql, params or {})
-        return DuckDBResult(cur)
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(sql, params or {})
+            return DuckDBResult(cur)
 
     def has_table(self, table_name: str) -> bool:
         """Check if a table exists in the database."""
-        try:
-            cur = self._conn.cursor()
-            cur.execute(
-                "SELECT count(*) FROM information_schema.tables WHERE table_name = $1",
-                [table_name],
-            )
-            return cur.fetchone()[0] > 0
-        except duckdb.CatalogException:
-            return False
-        except duckdb.Error:
-            logger.warning("has_table(%s) failed unexpectedly", table_name, exc_info=True)
-            return False
+        with self._lock:
+            try:
+                cur = self._conn.cursor()
+                cur.execute(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_name = $1",
+                    [table_name],
+                )
+                return cur.fetchone()[0] > 0
+            except duckdb.CatalogException:
+                return False
+            except duckdb.Error:
+                logger.warning("has_table(%s) failed unexpectedly", table_name, exc_info=True)
+                return False
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +127,7 @@ class DuckDBSession:
 # ---------------------------------------------------------------------------
 
 _conn: duckdb.DuckDBPyConnection | None = None
+_conn_lock = threading.Lock()
 
 # Tables that contain geometry columns (stored as WKB in Parquet).
 _GEO_TABLES: dict[str, list[str]] = {
@@ -272,4 +282,4 @@ def get_db() -> Iterator[DuckDBSession]:
     """FastAPI dependency – yields a DuckDBSession per request."""
     if _conn is None:
         raise RuntimeError("Database not initialised – call init_db() first")
-    yield DuckDBSession(_conn)
+    yield DuckDBSession(_conn, _conn_lock)

@@ -314,19 +314,20 @@ export default function ConnectivityMap() {
 
   const toggleBaseLayer = useCallback(
     (groupId: string) => {
-      setBaseLayers((prev) =>
-        prev.map((l) => (l.id === groupId ? { ...l, visible: !l.visible } : l)),
-      );
-      const map = mapRef.current;
-      if (!map) return;
-      const layer = baseLayers.find((l) => l.id === groupId);
-      if (!layer) return;
-      const newVis = !layer.visible ? "visible" : "none";
-      for (const lid of BASE_LAYER_MAPPING[groupId] ?? []) {
-        if (map.getLayer(lid)) map.setLayoutProperty(lid, "visibility", newVis);
-      }
+      setBaseLayers((prev) => {
+        const layer = prev.find((l) => l.id === groupId);
+        if (!layer) return prev;
+        const newVis = !layer.visible ? "visible" : "none";
+        const map = mapRef.current;
+        if (map) {
+          for (const lid of BASE_LAYER_MAPPING[groupId] ?? []) {
+            if (map.getLayer(lid)) map.setLayoutProperty(lid, "visibility", newVis);
+          }
+        }
+        return prev.map((l) => (l.id === groupId ? { ...l, visible: !l.visible } : l));
+      });
     },
-    [baseLayers],
+    [],
   );
 
   // Reactive transit layer visibility
@@ -369,7 +370,7 @@ export default function ConnectivityMap() {
     let cancelled = false;
     queryClientRef.current.fetchQuery(frequencyQueryOptions(freqWindow))
       .then((data) => {
-        if (cancelled || !data) return;
+        if (cancelled || !data || !mapRef.current) return;
         const mlMap = map as unknown as MaplibreMap;
         const source = mlMap.getSource("frequency");
         if (source && "setData" in source) {
@@ -406,7 +407,8 @@ export default function ConnectivityMap() {
       let cancelled = false;
       queryClientRef.current.ensureQueryData(socialMunisQueryOptions())
         .then((data) => {
-          if (cancelled || !data) return;
+          if (cancelled) return;
+          if (!data || !mapRef.current) return;
           mlMap.addSource("social-munis", { type: "geojson", data });
           mlMap.addLayer({
             id: "social-fill", type: "fill", source: "social-munis",
@@ -525,7 +527,7 @@ export default function ConnectivityMap() {
       departureTime,
     }))
       .then((data) => {
-        if (cancelled || !data) return;
+        if (cancelled || !data || !mapRef.current) return;
         const source = mlMap.getSource("cells");
         if (source && "setData" in source) {
           (source as { setData: (d: unknown) => void }).setData(data);

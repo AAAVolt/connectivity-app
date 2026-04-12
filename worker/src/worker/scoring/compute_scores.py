@@ -13,6 +13,7 @@ import pandas as pd
 import structlog
 
 from worker.db import create_engine, register_parquet
+from worker.io import atomic_write_parquet
 from worker.scoring.config import ScoringConfig, load_scoring_config
 from worker.scoring.diminishing import concave_transform
 from worker.scoring.impedance import exponential_impedance
@@ -113,18 +114,18 @@ def compute_scores(
 
     conn.close()
 
-    # Write results as Parquet
+    # Write results as Parquet (atomic to avoid corruption on crash)
     if all_score_dfs:
         scores_df = pd.concat(all_score_dfs, ignore_index=True)
-        scores_df.to_parquet(serving / "connectivity_scores.parquet", index=False)
+        atomic_write_parquet(scores_df, serving / "connectivity_scores.parquet")
 
     if all_combined_dfs:
         combined_df = pd.concat(all_combined_dfs, ignore_index=True)
-        combined_df.to_parquet(serving / "combined_scores.parquet", index=False)
+        atomic_write_parquet(combined_df, serving / "combined_scores.parquet")
 
     if all_min_tt_dfs:
         min_tt_df = pd.concat(all_min_tt_dfs, ignore_index=True)
-        min_tt_df.to_parquet(serving / "min_travel_times.parquet", index=False)
+        atomic_write_parquet(min_tt_df, serving / "min_travel_times.parquet")
 
     result_stats: dict[str, object] = {
         "scores_written": total_scores,

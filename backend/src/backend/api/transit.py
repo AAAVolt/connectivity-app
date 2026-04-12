@@ -38,23 +38,24 @@ def get_transit_stops(
             media_type="application/geo+json",
         )
 
-    params: dict[str, object] = {}
-    where = ""
+    params: dict[str, object] = {"lim": limit}
     if operator:
-        where = "AND operator = $operator"
         params["operator"] = operator
-
-    params["lim"] = limit
-    result = db.execute(
-        f"""
-        SELECT id, operator, stop_id, stop_name,
-               ST_AsGeoJSON(geom) AS geometry
-        FROM gtfs_stops
-        WHERE 1=1 {where}
-        LIMIT $lim
-        """,
-        params,
-    )
+        sql = """
+            SELECT id, operator, stop_id, stop_name,
+                   ST_AsGeoJSON(geom) AS geometry
+            FROM gtfs_stops
+            WHERE operator = $operator
+            LIMIT $lim
+        """
+    else:
+        sql = """
+            SELECT id, operator, stop_id, stop_name,
+                   ST_AsGeoJSON(geom) AS geometry
+            FROM gtfs_stops
+            LIMIT $lim
+        """
+    result = db.execute(sql, params)
     rows = result.fetchall()
 
     features = [
@@ -91,23 +92,25 @@ def get_transit_routes(
             media_type="application/geo+json",
         )
 
-    params: dict[str, object] = {}
-    where = ""
+    params: dict[str, object] = {"lim": limit}
     if operator:
-        where = "AND operator = $operator"
         params["operator"] = operator
-
-    params["lim"] = limit
-    result = db.execute(
-        f"""
-        SELECT id, operator, route_id, route_name, route_type, route_color,
-               ST_AsGeoJSON(geom) AS geometry
-        FROM gtfs_routes
-        WHERE geom IS NOT NULL {where}
-        LIMIT $lim
-        """,
-        params,
-    )
+        sql = """
+            SELECT id, operator, route_id, route_name, route_type, route_color,
+                   ST_AsGeoJSON(geom) AS geometry
+            FROM gtfs_routes
+            WHERE geom IS NOT NULL AND operator = $operator
+            LIMIT $lim
+        """
+    else:
+        sql = """
+            SELECT id, operator, route_id, route_name, route_type, route_color,
+                   ST_AsGeoJSON(geom) AS geometry
+            FROM gtfs_routes
+            WHERE geom IS NOT NULL
+            LIMIT $lim
+        """
+    result = db.execute(sql, params)
     rows = result.fetchall()
 
     features = []

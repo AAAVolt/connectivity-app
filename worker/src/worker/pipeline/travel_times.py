@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 import structlog
 
+from worker.io import atomic_write_parquet
+
 logger = structlog.get_logger()
 
 GRID_CRS = "EPSG:25830"  # projected CRS used for grid generation
@@ -300,8 +302,7 @@ def import_travel_times(
                      rows_before=before_count, rows_after=len(combined))
 
         out_path = serving / "travel_times.parquet"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.to_parquet(out_path, index=False)
+        atomic_write_parquet(combined, out_path)
 
     stats: dict[str, object] = {
         "files_processed": len(parquet_files),

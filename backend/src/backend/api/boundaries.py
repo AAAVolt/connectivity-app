@@ -121,19 +121,25 @@ def get_nucleos(
 ) -> Response:
     """Return EUSTAT nucleo (settlement) boundaries as GeoJSON."""
     params: dict[str, object] = {"tid": tenant.tenant_id}
-    diseminado_filter = "" if include_diseminado else "AND nucleo_num != '99'"
-
-    result = db.execute(
-        f"""
-        SELECT id, code, nucleo_num, name, entity_name,
-               muni_code, muni_name,
-               ST_AsGeoJSON(geom) AS geometry
-        FROM nucleos
-        WHERE tenant_id = $tid {diseminado_filter}
-        ORDER BY muni_name, name
-        """,
-        params,
-    )
+    if include_diseminado:
+        sql = """
+            SELECT id, code, nucleo_num, name, entity_name,
+                   muni_code, muni_name,
+                   ST_AsGeoJSON(geom) AS geometry
+            FROM nucleos
+            WHERE tenant_id = $tid
+            ORDER BY muni_name, name
+        """
+    else:
+        sql = """
+            SELECT id, code, nucleo_num, name, entity_name,
+                   muni_code, muni_name,
+                   ST_AsGeoJSON(geom) AS geometry
+            FROM nucleos
+            WHERE tenant_id = $tid AND nucleo_num != '99'
+            ORDER BY muni_name, name
+        """
+    result = db.execute(sql, params)
 
     features = [
         {

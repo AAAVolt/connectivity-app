@@ -139,26 +139,23 @@ def get_summary(
     main = result.one()
 
     # Count auxiliary tables — some may not exist in demo/minimal setups.
-    # Table names are validated against a whitelist to prevent SQL injection.
-    _COUNTABLE_TABLES: dict[str, str] = {
-        "destinations": "tenant_id = $tid",
-        "gtfs_stops": "",
-        "gtfs_routes": "",
-        "municipalities": "tenant_id = $tid",
-        "comarcas": "tenant_id = $tid",
+    # SQL is pre-built (no dynamic table names); keys are only used for lookup.
+    _COUNT_SQL: dict[str, tuple[str, bool]] = {
+        "destinations": ("SELECT COUNT(*) AS c FROM destinations WHERE tenant_id = $tid", True),
+        "gtfs_stops": ("SELECT COUNT(*) AS c FROM gtfs_stops", False),
+        "gtfs_routes": ("SELECT COUNT(*) AS c FROM gtfs_routes", False),
+        "municipalities": ("SELECT COUNT(*) AS c FROM municipalities WHERE tenant_id = $tid", True),
+        "comarcas": ("SELECT COUNT(*) AS c FROM comarcas WHERE tenant_id = $tid", True),
     }
 
-    def _safe_count(table: str) -> int:
-        if table not in _COUNTABLE_TABLES:
-            raise ValueError(f"Table not in whitelist: {table}")
-        where = _COUNTABLE_TABLES[table]
+    def _safe_count(table_key: str) -> int:
+        entry = _COUNT_SQL.get(table_key)
+        if entry is None:
+            raise ValueError(f"Unknown count table: {table_key}")
+        sql, needs_tenant = entry
         try:
-            q = f"SELECT COUNT(*) AS c FROM {table}"  # noqa: S608 — table validated above
-            params: dict[str, Any] = {}
-            if where:
-                q += f" WHERE {where}"
-                params["tid"] = tenant.tenant_id
-            return db.execute(q, params).one().c
+            params: dict[str, Any] = {"tid": tenant.tenant_id} if needs_tenant else {}
+            return db.execute(sql, params).one().c
         except (duckdb.CatalogException, duckdb.BinderException):
             # Table doesn't exist in this dataset — expected in minimal setups
             return 0
@@ -521,26 +518,108 @@ class AreaDetail(BaseModel):
     service_coverage: list[ServiceCoverage]
 
 
-_ALLOWED_AREA_TABLES = {
-    "comarcas": "comarca_code",
-    "municipalities": "muni_code",
+class _AreaType:
+    """Pre-built SQL for a specific area type — avoids dynamic table interpolation."""
+
+    __slots__ = ("table", "code_col", "summary_sql", "purpose_sql", "tt_sql", "coverage_sql")
+
+    def __init__(self, table: str, code_col: str) -> None:
+        self.table = table
+        self.code_col = code_col
+
+        # All SQL is frozen at import time — no user input reaches these strings.
+        self.summary_sql = (
+            f"SELECT a.name, a.{code_col} AS code,"
+            " COUNT(gc.id) AS cell_count,"
+            " COALESCE(SUM(gc.population), 0) AS population,"
+            " AVG(cs.combined_score_normalized) AS avg_score,"
+            " CASE WHEN SUM(gc.population) > 0 THEN"
+            "   SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))"
+            "   / SUM(gc.population)"
+            "   ELSE AVG(cs.combined_score_normalized) END AS weighted_avg_score"
+            f" FROM {table} a"
+            " JOIN grid_cells gc ON gc.tenant_id = a.tenant_id"
+            "   AND ST_Intersects(gc.centroid, a.geom)"
+            " LEFT JOIN combined_scores cs ON cs.cell_id = gc.id"
+            "   AND cs.tenant_id = gc.tenant_id AND cs.departure_time = $dep_time"
+            f" WHERE a.tenant_id = $tid AND a.{code_col} = $code"
+            f" GROUP BY a.name, a.{code_col}"
+        )
+
+        self.purpose_sql = (
+            " SELECT cs.mode, cs.purpose,"
+            " AVG(cs.score_normalized) AS avg_score,"
+            " CASE WHEN SUM(gc.population) > 0 THEN"
+            "   SUM(gc.population * COALESCE(cs.score_normalized, 0))"
+            "   / SUM(gc.population)"
+            "   ELSE AVG(cs.score_normalized) END AS weighted_avg_score,"
+            " COUNT(*) AS cell_count"
+            f" FROM {table} a"
+            " JOIN grid_cells gc ON gc.tenant_id = a.tenant_id"
+            "   AND ST_Intersects(gc.centroid, a.geom)"
+            " JOIN connectivity_scores cs ON cs.cell_id = gc.id"
+            "   AND cs.tenant_id = gc.tenant_id AND cs.departure_time = $dep_time"
+            f" WHERE a.tenant_id = $tid AND a.{code_col} = $code"
+            " GROUP BY cs.mode, cs.purpose ORDER BY cs.mode, cs.purpose"
+        )
+
+        self.tt_sql = (
+            " SELECT mt.mode, mt.purpose,"
+            " AVG(mt.min_travel_time_minutes) AS avg_tt"
+            f" FROM {table} a"
+            " JOIN grid_cells gc ON gc.tenant_id = a.tenant_id"
+            "   AND ST_Intersects(gc.centroid, a.geom)"
+            " JOIN min_travel_times mt ON mt.cell_id = gc.id"
+            "   AND mt.tenant_id = gc.tenant_id AND mt.departure_time = $dep_time"
+            f" WHERE a.tenant_id = $tid AND a.{code_col} = $code"
+            " GROUP BY mt.mode, mt.purpose"
+        )
+
+        self.coverage_sql = (
+            " SELECT mt.purpose, mt.mode,"
+            " COUNT(*) AS total_cells,"
+            " COALESCE(SUM(gc.population), 0) AS total_population,"
+            " COALESCE(SUM(gc.population)"
+            "   FILTER (WHERE mt.min_travel_time_minutes <= 15), 0) AS pop_15min,"
+            " COALESCE(SUM(gc.population)"
+            "   FILTER (WHERE mt.min_travel_time_minutes <= 30), 0) AS pop_30min,"
+            " COALESCE(SUM(gc.population)"
+            "   FILTER (WHERE mt.min_travel_time_minutes <= 45), 0) AS pop_45min,"
+            " COALESCE(SUM(gc.population)"
+            "   FILTER (WHERE mt.min_travel_time_minutes <= 60), 0) AS pop_60min,"
+            " AVG(mt.min_travel_time_minutes) AS avg_tt,"
+            " quantile_cont(mt.min_travel_time_minutes, 0.5) AS median_tt"
+            f" FROM {table} a"
+            " JOIN grid_cells gc ON gc.tenant_id = a.tenant_id"
+            "   AND ST_Intersects(gc.centroid, a.geom)"
+            " JOIN min_travel_times mt ON mt.cell_id = gc.id"
+            "   AND mt.tenant_id = gc.tenant_id AND mt.departure_time = $dep_time"
+            f" WHERE a.tenant_id = $tid AND a.{code_col} = $code"
+            " GROUP BY mt.purpose, mt.mode ORDER BY mt.purpose, mt.mode"
+        )
+
+
+# Pre-built at import time — only these two area types are valid.
+_AREA_TYPES: dict[str, _AreaType] = {
+    "comarcas": _AreaType("comarcas", "comarca_code"),
+    "municipalities": _AreaType("municipalities", "muni_code"),
 }
 
 
 def _area_detail(
     *,
-    table: str,
-    code_col: str,
+    area_type: str,
     code_value: str,
     dep_time: str,
     tenant: TenantContext,
     db: DuckDBSession,
 ) -> AreaDetail:
     """Shared logic for comarca / municipality detail endpoints."""
-    if table not in _ALLOWED_AREA_TABLES or _ALLOWED_AREA_TABLES[table] != code_col:
-        raise ValueError(f"Invalid area table/column: {table}/{code_col}")
+    area = _AREA_TYPES.get(area_type)
+    if area is None:
+        raise ValueError(f"Invalid area type: {area_type}")
 
-    cache_key = f"area_detail:{tenant.tenant_id}:{table}:{code_value}:{dep_time}"
+    cache_key = f"area_detail:{tenant.tenant_id}:{area_type}:{code_value}:{dep_time}"
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
@@ -552,66 +631,19 @@ def _area_detail(
         row.code: row.label for row in dt_result.fetchall()
     }
 
+    params: dict[str, Any] = {
+        "tid": tenant.tenant_id,
+        "dep_time": dep_time,
+        "code": code_value,
+    }
+
     # Summary
-    summary = db.execute(
-        f"""
-        SELECT
-            a.name,
-            a.{code_col}                           AS code,
-            COUNT(gc.id)                           AS cell_count,
-            COALESCE(SUM(gc.population), 0)        AS population,
-            AVG(cs.combined_score_normalized)       AS avg_score,
-            CASE
-                WHEN SUM(gc.population) > 0 THEN
-                    SUM(gc.population * COALESCE(cs.combined_score_normalized, 0))
-                    / SUM(gc.population)
-                ELSE AVG(cs.combined_score_normalized)
-            END                                    AS weighted_avg_score
-        FROM {table} a
-        JOIN grid_cells gc
-            ON gc.tenant_id = a.tenant_id
-            AND ST_Intersects(gc.centroid, a.geom)
-        LEFT JOIN combined_scores cs
-            ON cs.cell_id = gc.id
-            AND cs.tenant_id = gc.tenant_id
-            AND cs.departure_time = $dep_time
-        WHERE a.tenant_id = $tid AND a.{code_col} = $code
-        GROUP BY a.name, a.{code_col}
-        """,
-        {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
-    )
-    s = summary.one_or_none()
+    s = db.execute(area.summary_sql, params).one_or_none()
     if s is None:
         raise HTTPException(status_code=404, detail="Area not found")
 
     # Purpose breakdown within area
-    pb_result = db.execute(
-        f"""
-        SELECT
-            cs.mode,
-            cs.purpose,
-            AVG(cs.score_normalized)  AS avg_score,
-            CASE
-                WHEN SUM(gc.population) > 0 THEN
-                    SUM(gc.population * COALESCE(cs.score_normalized, 0))
-                    / SUM(gc.population)
-                ELSE AVG(cs.score_normalized)
-            END                       AS weighted_avg_score,
-            COUNT(*)                  AS cell_count
-        FROM {table} a
-        JOIN grid_cells gc
-            ON gc.tenant_id = a.tenant_id
-            AND ST_Intersects(gc.centroid, a.geom)
-        JOIN connectivity_scores cs
-            ON cs.cell_id = gc.id
-            AND cs.tenant_id = gc.tenant_id
-            AND cs.departure_time = $dep_time
-        WHERE a.tenant_id = $tid AND a.{code_col} = $code
-        GROUP BY cs.mode, cs.purpose
-        ORDER BY cs.mode, cs.purpose
-        """,
-        {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
-    )
+    pb_result = db.execute(area.purpose_sql, params)
 
     purpose_scores: list[PurposeBreakdown] = []
     for row in pb_result.fetchall():
@@ -626,25 +658,7 @@ def _area_detail(
         ))
 
     # Travel times within area
-    tt_result = db.execute(
-        f"""
-        SELECT
-            mt.mode,
-            mt.purpose,
-            AVG(mt.min_travel_time_minutes) AS avg_tt
-        FROM {table} a
-        JOIN grid_cells gc
-            ON gc.tenant_id = a.tenant_id
-            AND ST_Intersects(gc.centroid, a.geom)
-        JOIN min_travel_times mt
-            ON mt.cell_id = gc.id
-            AND mt.tenant_id = gc.tenant_id
-            AND mt.departure_time = $dep_time
-        WHERE a.tenant_id = $tid AND a.{code_col} = $code
-        GROUP BY mt.mode, mt.purpose
-        """,
-        {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
-    )
+    tt_result = db.execute(area.tt_sql, params)
     tt_map: dict[tuple[str, str], float | None] = {}
     for row in tt_result.fetchall():
         tt_map[(row.mode, row.purpose)] = _f(row.avg_tt)
@@ -653,42 +667,7 @@ def _area_detail(
         ps.avg_travel_time = tt_map.get((ps.mode, ps.purpose))
 
     # Service coverage within area
-    cov_result = db.execute(
-        f"""
-        SELECT
-            mt.purpose,
-            mt.mode,
-            COUNT(*)                             AS total_cells,
-            COALESCE(SUM(gc.population), 0)      AS total_population,
-            COALESCE(SUM(gc.population)
-                FILTER (WHERE mt.min_travel_time_minutes <= 15), 0)
-                                                 AS pop_15min,
-            COALESCE(SUM(gc.population)
-                FILTER (WHERE mt.min_travel_time_minutes <= 30), 0)
-                                                 AS pop_30min,
-            COALESCE(SUM(gc.population)
-                FILTER (WHERE mt.min_travel_time_minutes <= 45), 0)
-                                                 AS pop_45min,
-            COALESCE(SUM(gc.population)
-                FILTER (WHERE mt.min_travel_time_minutes <= 60), 0)
-                                                 AS pop_60min,
-            AVG(mt.min_travel_time_minutes)      AS avg_tt,
-            quantile_cont(mt.min_travel_time_minutes, 0.5)
-                                                 AS median_tt
-        FROM {table} a
-        JOIN grid_cells gc
-            ON gc.tenant_id = a.tenant_id
-            AND ST_Intersects(gc.centroid, a.geom)
-        JOIN min_travel_times mt
-            ON mt.cell_id = gc.id
-            AND mt.tenant_id = gc.tenant_id
-            AND mt.departure_time = $dep_time
-        WHERE a.tenant_id = $tid AND a.{code_col} = $code
-        GROUP BY mt.purpose, mt.mode
-        ORDER BY mt.purpose, mt.mode
-        """,
-        {"tid": tenant.tenant_id, "dep_time": dep_time, "code": code_value},
-    )
+    cov_result = db.execute(area.coverage_sql, params)
 
     service_coverage = [
         ServiceCoverage(
@@ -751,8 +730,7 @@ def get_comarca_detail(
     dep_time = _validate_departure_time(departure_time)
     _validate_area_code(comarca_code, "comarca_code")
     return _area_detail(
-        table="comarcas",
-        code_col="comarca_code",
+        area_type="comarcas",
         code_value=comarca_code,
         dep_time=dep_time,
         tenant=tenant,
@@ -773,8 +751,7 @@ def get_municipality_detail(
     dep_time = _validate_departure_time(departure_time)
     _validate_area_code(muni_code, "muni_code")
     return _area_detail(
-        table="municipalities",
-        code_col="muni_code",
+        area_type="municipalities",
         code_value=muni_code,
         dep_time=dep_time,
         tenant=tenant,

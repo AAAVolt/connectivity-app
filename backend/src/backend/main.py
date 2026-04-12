@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
+from backend.api.ratelimit import RateLimitMiddleware
 from backend.api.boundaries import router as boundaries_router
 from backend.api.cells import router as cells_router
 from backend.api.dashboard import router as dashboard_router
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     )
 
     settings = get_settings()
+    application.add_middleware(RateLimitMiddleware, rate=60, window=60)
     application.add_middleware(GZipMiddleware, minimum_size=500)
     application.add_middleware(
         CORSMiddleware,

@@ -27,7 +27,7 @@ httpx = "^0.27"
 pythonpath = ["src"]
 asyncio_mode = "auto"
 filterwarnings = [
-    "ignore::jwt.warnings.InsecureKeyLengthWarning",
+    "ignore::DeprecationWarning:jwt",
 ]
 
 [build-system]

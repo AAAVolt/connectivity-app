@@ -61,6 +61,7 @@ import type { MunicipalitySocioProfile } from "@/lib/api";
 import { useTranslation } from "@/lib/i18n";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
 import { useAreaDetail } from "@/hooks/use-area-detail";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1221,10 +1222,12 @@ function OverviewTab({
       </Card>
 
       {/* Score Distribution + Population by Score */}
-      <div className="grid gap-4 grid-cols-1 lg:grid-cols-4">
-        <ScoreDistributionChart data={distribution} />
-        <PopulationByScoreChart data={distribution} />
-      </div>
+      <ErrorBoundary label="Score Charts">
+        <div className="grid gap-4 grid-cols-1 lg:grid-cols-4">
+          <ScoreDistributionChart data={distribution} />
+          <PopulationByScoreChart data={distribution} />
+        </div>
+      </ErrorBoundary>
 
       {/* ── Equity Hotspots ── */}
       {equityHotspots.length > 0 && (
@@ -1321,43 +1324,49 @@ function OverviewTab({
       )}
 
       {/* Purpose Breakdown + Travel Times */}
-      <div className="grid gap-4 grid-cols-1 lg:grid-cols-4">
-        <PurposeBarChart data={purposes} />
-        <TravelTimeBarChart data={purposes} />
-      </div>
+      <ErrorBoundary label="Purpose Breakdown">
+        <div className="grid gap-4 grid-cols-1 lg:grid-cols-4">
+          <PurposeBarChart data={purposes} />
+          <TravelTimeBarChart data={purposes} />
+        </div>
+      </ErrorBoundary>
 
       {/* Service Coverage */}
-      {coverage.length > 0 && <CoverageChart data={coverage} />}
+      <ErrorBoundary label="Service Coverage">
+        {coverage.length > 0 && <CoverageChart data={coverage} />}
+      </ErrorBoundary>
 
       {/* Comarca Ranking */}
-      {comarcas.length > 0 && (
-        <AreaRankingChart
-          data={comarcas}
-          title={t("ranking.comarca")}
-          description={t("ranking.comarcaDesc")}
-          color={TRANSIT_COLOR}
-        />
-      )}
-
-      {/* Municipality Rankings */}
-      {municipalities.length > 0 && (
-        <div className="grid gap-4 grid-cols-1 lg:grid-cols-4">
+      <ErrorBoundary label="Rankings">
+        {comarcas.length > 0 && (
           <AreaRankingChart
-            data={topMunis}
-            title={t("ranking.bestMunis")}
-            description={t("ranking.bestMunisDesc")}
+            data={comarcas}
+            title={t("ranking.comarca")}
+            description={t("ranking.comarcaDesc")}
             color={TRANSIT_COLOR}
-            maxItems={15}
           />
-          <AreaRankingChart
-            data={bottomMunis}
-            title={t("ranking.worstMunis")}
-            description={t("ranking.worstMunisDesc")}
-            color="hsl(0, 84%, 60%)"
-            maxItems={15}
-          />
-        </div>
-      )}
+        )}
+
+        {/* Municipality Rankings */}
+        {municipalities.length > 0 && (
+          <div className="grid gap-4 grid-cols-1 lg:grid-cols-4">
+            <AreaRankingChart
+              data={topMunis}
+              title={t("ranking.bestMunis")}
+              description={t("ranking.bestMunisDesc")}
+              color={TRANSIT_COLOR}
+              maxItems={15}
+            />
+            <AreaRankingChart
+              data={bottomMunis}
+              title={t("ranking.worstMunis")}
+              description={t("ranking.worstMunisDesc")}
+              color="hsl(0, 84%, 60%)"
+              maxItems={15}
+            />
+          </div>
+        )}
+      </ErrorBoundary>
     </>
   );
 }

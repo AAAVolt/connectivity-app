@@ -19,7 +19,8 @@ gcloud services enable \
   storage.googleapis.com \
   run.googleapis.com \
   artifactregistry.googleapis.com \
-  cloudbuild.googleapis.com
+  cloudbuild.googleapis.com \
+  secretmanager.googleapis.com
 
 # ── Cloud Storage ──────────────────────────────────────────
 echo "==> Creating bucket gs://${BUCKET}"

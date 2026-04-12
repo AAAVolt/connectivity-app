@@ -26,6 +26,8 @@ import pandas as pd
 import structlog
 from shapely.geometry import Point
 
+from worker.io import atomic_write_parquet
+
 logger = structlog.get_logger()
 
 # Bizkaia approximate bounding box for basic validation
@@ -72,7 +74,7 @@ def _ensure_destination_type(
         "description": "",
     }])
     df = pd.concat([df, new_row], ignore_index=True)
-    df.to_parquet(dest_types_path, index=False)
+    atomic_write_parquet(df, dest_types_path)
     return new_id
 
 
@@ -142,17 +144,24 @@ def _is_unified_csv(headers: set[str]) -> bool:
 
 
 def _append_destinations(new_gdf: gpd.GeoDataFrame, serving: Path) -> None:
-    """Append new destinations to the existing destinations.parquet, or create it."""
+    """Append new destinations to the existing destinations.parquet, or create it.
+
+    Only assigns IDs to newly-added rows, preserving existing IDs so that
+    foreign keys in travel_times.parquet remain valid.
+    """
     dest_path = serving / "destinations.parquet"
     if dest_path.exists():
         existing = gpd.read_parquet(dest_path)
+        max_id = int(existing["id"].max()) if not existing.empty else 0
+        new_gdf = new_gdf.copy()
+        new_gdf["id"] = range(max_id + 1, max_id + 1 + len(new_gdf))
         combined = pd.concat([existing, new_gdf], ignore_index=True)
         combined = gpd.GeoDataFrame(combined, geometry="geometry", crs="EPSG:4326")
     else:
+        new_gdf = new_gdf.copy()
+        new_gdf["id"] = range(1, len(new_gdf) + 1)
         combined = new_gdf
-    combined["id"] = range(1, len(combined) + 1)
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(dest_path)
+    atomic_write_parquet(combined, dest_path)
 
 
 def _remove_destinations_by_type(serving: Path, type_id: int) -> int:
@@ -169,7 +178,7 @@ def _remove_destinations_by_type(serving: Path, type_id: int) -> int:
             dest_path.unlink()
         else:
             filtered = gpd.GeoDataFrame(filtered, geometry="geometry", crs="EPSG:4326")
-            filtered.to_parquet(dest_path)
+            atomic_write_parquet(filtered, dest_path)
     return deleted
 
 
