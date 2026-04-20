@@ -62,6 +62,10 @@ async function proxy(req: NextRequest, path: string): Promise<NextResponse> {
   const contentType = req.headers.get("Content-Type");
   if (contentType) forwardHeaders["Content-Type"] = contentType;
 
+  // Forward tenant header required by the backend
+  const tenantId = req.headers.get("X-Tenant-ID");
+  if (tenantId) forwardHeaders["X-Tenant-ID"] = tenantId;
+
   // User's app JWT → X-App-Token (Cloud Run IAM needs Authorization for itself)
   const userJwt = req.headers.get("Authorization");
   if (userJwt) forwardHeaders["X-App-Token"] = userJwt;
