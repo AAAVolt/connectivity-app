@@ -2,6 +2,7 @@
 
 import logging
 import time
+from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
 import jwt
@@ -16,9 +17,9 @@ DEMO_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def get_tenant(
-    authorization: str | None = Header(None, include_in_schema=False),
-    x_app_token: str | None = Header(None, include_in_schema=False),
-    x_tenant_id: str | None = Header(None),
+    authorization: Annotated[str | None, Header(include_in_schema=False)] = None,
+    x_app_token: Annotated[str | None, Header(include_in_schema=False)] = None,
+    x_tenant_id: Annotated[str | None, Header()] = None,
     settings: Settings = Depends(get_settings),
 ) -> TenantContext:
     """Extract tenant context from JWT or dev header.
