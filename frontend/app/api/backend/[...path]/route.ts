@@ -17,12 +17,12 @@ async function getIdToken(): Promise<string | null> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        grantType: "urn:ietf:params:oauth:grant-type:token-exchange",
+        grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
         audience: `//iam.googleapis.com/${WIF_PROVIDER}`,
         scope: "https://www.googleapis.com/auth/cloud-platform",
-        requestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
-        subjectTokenType: "urn:ietf:params:oauth:token-type:jwt",
-        subjectToken: oidcToken,
+        requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+        subject_token: oidcToken,
       }),
     });
     if (!stsRes.ok) {
