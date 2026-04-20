@@ -24,7 +24,7 @@ steps:
       - '--min-instances=0'
       - '--max-instances=5'
       - '--timeout=120'
-      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=bizkaia-conn-data,GCS_PREFIX=serving,ENVIRONMENT=production'
+      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=bizkaia-conn-data-wp,GCS_PREFIX=serving,ENVIRONMENT=production'
       - '--no-allow-unauthenticated'
 
 images:
