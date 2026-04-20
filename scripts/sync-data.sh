@@ -7,7 +7,7 @@
 # Prerequisites: gcloud CLI authenticated (gcloud auth login)
 set -euo pipefail
 
-BUCKET="gs://bizkaia-conn-data-wp"
+BUCKET="gs://bizkaia-data-laxi"
 DATA_DIR="data"
 
 # Subdirectories to sync (everything needed to run locally)

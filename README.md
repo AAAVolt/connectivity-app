@@ -58,7 +58,7 @@ The script syncs these directories:
 | `data/raw/` | EUSTAT shapefiles (nucleos, secciones, population) | ~36 MB |
 | `data/serving/` | Final Parquet files consumed by the backend | generated |
 
-**GCS bucket:** `gs://bizkaia-conn-data-wp` (project `bizkaia-492317`, region `europe-southwest1`)
+**GCS bucket:** `gs://bizkaia-data-laxi` (project `bizkaia-492317`, region `europe-southwest1`)
 
 ## Make commands
 

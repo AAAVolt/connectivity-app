@@ -3,12 +3,12 @@
 # Usage: bash infra/deploy.sh
 set -euo pipefail
 
-PROJECT_ID="bizkaia-connectivity"
+PROJECT_ID="laxi-ai"
 REGION="europe-southwest1"
 AR_REPO="bizkaia-images"
 SERVICE="bizkaia-api"
 SA_EMAIL="bizkaia-backend@${PROJECT_ID}.iam.gserviceaccount.com"
-BUCKET="bizkaia-conn-data-wp"
+BUCKET="bizkaia-data-laxi"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${SERVICE}"
 TAG="${IMAGE}:$(date +%Y%m%d-%H%M%S)"
 TAG_LATEST="${IMAGE}:latest"

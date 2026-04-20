@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Data source: "local" reads Parquet from data_dir, "gcs" downloads from GCS first.
     data_source: str = "local"
     data_dir: str = "./data/serving"
-    gcs_bucket: str = "bizkaia-conn-data-wp"
+    gcs_bucket: str = "bizkaia-data-laxi"
     gcs_prefix: str = "serving"
 
     jwt_secret: str = "dev-secret-change-me"

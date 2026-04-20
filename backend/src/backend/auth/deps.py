@@ -17,22 +17,30 @@ DEMO_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 def get_tenant(
     authorization: str | None = Header(None, include_in_schema=False),
+    x_app_token: str | None = Header(None, include_in_schema=False),
     x_tenant_id: str | None = Header(None),
     settings: Settings = Depends(get_settings),
 ) -> TenantContext:
-    """Extract tenant context from JWT or dev header."""
+    """Extract tenant context from JWT or dev header.
+
+    When the Vercel proxy is in front of Cloud Run, Cloud Run IAM consumes the
+    Authorization header (Google ID token). The proxy moves the user's app JWT
+    to X-App-Token so we check that first, then fall back to Authorization.
+    """
     if settings.environment == "local":
         tenant_id = x_tenant_id or DEMO_TENANT_ID
         return TenantContext(tenant_id=tenant_id, user_id="dev-user", role="admin")
 
-    if not authorization or not authorization.startswith("Bearer "):
-        _logger.info("Auth failed: missing or malformed Authorization header")
+    # Prefer X-App-Token (set by the Vercel proxy); fall back to direct Authorization.
+    raw_token = x_app_token or authorization
+    if not raw_token or not raw_token.startswith("Bearer "):
+        _logger.info("Auth failed: missing or malformed authorization header")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid authorization header",
         )
 
-    token = authorization.removeprefix("Bearer ")
+    token = raw_token.removeprefix("Bearer ")
     try:
         payload = jwt.decode(
             token, settings.jwt_secret, algorithms=[settings.jwt_algorithm]

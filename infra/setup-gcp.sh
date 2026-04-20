@@ -3,9 +3,9 @@
 # Run once: bash infra/setup-gcp.sh
 set -euo pipefail
 
-PROJECT_ID="bizkaia-connectivity"
+PROJECT_ID="laxi-ai"
 REGION="europe-southwest1"          # Madrid – closest to Bizkaia
-BUCKET="bizkaia-conn-data-wp"
+BUCKET="bizkaia-data-laxi"
 SA_NAME="bizkaia-backend"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 AR_REPO="bizkaia-images"
