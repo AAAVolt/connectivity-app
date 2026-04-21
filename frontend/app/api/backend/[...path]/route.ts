@@ -26,6 +26,7 @@ async function proxy(req: NextRequest, path: string): Promise<NextResponse> {
       method: req.method,
       headers: forwardHeaders,
       body: body ? Buffer.from(body) : undefined,
+      cache: "no-store",
     });
   } catch (err) {
     console.error("[proxy] upstream fetch failed", err);
