@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 class WorkerSettings(BaseSettings):
     data_dir: str = "/data"
     serving_dir: str = "/data/serving"
-    gcs_bucket: str = "bizkaia-data-laxi"
+    gcs_bucket: str = "bizkaia-data-pub"
     gcs_prefix: str = "serving"
     environment: str = "local"
 

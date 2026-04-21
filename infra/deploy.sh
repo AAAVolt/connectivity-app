@@ -3,12 +3,12 @@
 # Usage: bash infra/deploy.sh
 set -euo pipefail
 
-PROJECT_ID="laxi-ai"
+PROJECT_ID="bizkaia-conn-pub"
 REGION="europe-southwest1"
 AR_REPO="bizkaia-images"
 SERVICE="bizkaia-api"
 SA_EMAIL="bizkaia-backend@${PROJECT_ID}.iam.gserviceaccount.com"
-BUCKET="bizkaia-data-laxi"
+BUCKET="bizkaia-data-pub"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${SERVICE}"
 TAG="${IMAGE}:$(date +%Y%m%d-%H%M%S)"
 TAG_LATEST="${IMAGE}:latest"
@@ -52,9 +52,9 @@ gcloud run deploy "${SERVICE}" \
   --min-instances=0 \
   --max-instances=5 \
   --timeout=120 \
-  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,CORS_ORIGINS=${CORS_ORIGINS:-}" \
+  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,CORS_ORIGINS=${CORS_ORIGINS:-},CORS_ORIGIN_REGEX=https://.*\\.(run\\.app|vercel\\.app)" \
   --set-secrets="JWT_SECRET=${SECRET_NAME}:latest" \
-  --no-allow-unauthenticated
+  --allow-unauthenticated
 
 URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --project="${PROJECT_ID}" --format="value(status.url)")
 echo ""

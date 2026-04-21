@@ -16,14 +16,14 @@ class Settings(BaseSettings):
     # Data source: "local" reads Parquet from data_dir, "gcs" downloads from GCS first.
     data_source: str = "local"
     data_dir: str = "./data/serving"
-    gcs_bucket: str = "bizkaia-data-laxi"
+    gcs_bucket: str = "bizkaia-data-pub"
     gcs_prefix: str = "serving"
 
     jwt_secret: str = "dev-secret-change-me"
     jwt_algorithm: str = "HS256"
     environment: str = "local"
     cors_origins: str = "http://localhost:3000"
-    cors_origin_regex: str = r"https://bizkaia-.*\.(run\.app|vercel\.app)"
+    cors_origin_regex: str = r"https://.*\.(run\.app|vercel\.app)"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 
