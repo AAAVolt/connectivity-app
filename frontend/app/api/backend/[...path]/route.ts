@@ -33,12 +33,15 @@ async function proxy(req: NextRequest, path: string): Promise<NextResponse> {
   }
 
   const resHeaders = new Headers();
+  const skipHeaders = ["transfer-encoding", "connection", "content-length", "content-encoding"];
   upstream.headers.forEach((v, k) => {
-    if (!["transfer-encoding", "connection"].includes(k.toLowerCase()))
-      resHeaders.set(k, v);
+    if (!skipHeaders.includes(k.toLowerCase())) resHeaders.set(k, v);
   });
 
-  return new NextResponse(upstream.body, {
+  // Buffer the body so Next.js can set content-length correctly
+  const resBody = await upstream.arrayBuffer();
+
+  return new NextResponse(resBody, {
     status: upstream.status,
     headers: resHeaders,
   });
