@@ -78,14 +78,14 @@ async def test_valid_token_accepted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_auth_header_rejected() -> None:
+async def test_missing_auth_header_returns_anonymous_viewer() -> None:
+    """Public tool: no auth header → anonymous viewer on demo tenant."""
     settings = _prod_settings()
 
-    from fastapi import HTTPException
-
-    with pytest.raises(HTTPException) as exc_info:
-        get_tenant(authorization=None, x_tenant_id=None, settings=settings)
-    assert exc_info.value.status_code == 401
+    ctx = get_tenant(authorization=None, x_app_token=None, x_tenant_id=None, settings=settings)
+    assert ctx.user_id == "anonymous"
+    assert ctx.role == "viewer"
+    assert ctx.tenant_id == DEMO_TENANT_ID
 
 
 @pytest.mark.asyncio
@@ -197,20 +197,19 @@ async def test_missing_sub_claim_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_malformed_bearer_prefix_rejected() -> None:
-    """Authorization header without 'Bearer ' prefix should be rejected."""
+async def test_non_bearer_scheme_treated_as_anonymous() -> None:
+    """An unrecognised auth scheme is ignored; falls back to anonymous viewer."""
     settings = _prod_settings()
     token = _make_token()
 
-    from fastapi import HTTPException
-
-    with pytest.raises(HTTPException) as exc_info:
-        get_tenant(
-            authorization=f"Token {token}",
-            x_tenant_id=None,
-            settings=settings,
-        )
-    assert exc_info.value.status_code == 401
+    ctx = get_tenant(
+        authorization=f"Token {token}",
+        x_app_token=None,
+        x_tenant_id=None,
+        settings=settings,
+    )
+    assert ctx.user_id == "anonymous"
+    assert ctx.role == "viewer"
 
 
 # -- Local dev mode details ----------------------------------------------------

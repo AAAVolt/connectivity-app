@@ -35,11 +35,8 @@ def get_tenant(
     # Prefer X-App-Token (set by the Vercel proxy); fall back to direct Authorization.
     raw_token = x_app_token or authorization
     if not raw_token or not raw_token.startswith("Bearer "):
-        _logger.info("Auth failed: missing or malformed authorization header")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authorization header",
-        )
+        # Public tool: unauthenticated requests get read-only access to the demo tenant.
+        return TenantContext(tenant_id=DEMO_TENANT_ID, user_id="anonymous", role="viewer")
 
     token = raw_token.removeprefix("Bearer ")
     try:
