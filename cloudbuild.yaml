@@ -1,3 +1,15 @@
+# Cloud Build pipeline — keep in sync with infra/deploy.sh
+# (deploy.sh is the authoritative source for ad-hoc deploys; this file mirrors
+# its `gcloud run deploy` invocation so triggered builds produce identical config.)
+#
+# Substitutions allow CI to set CORS_ORIGINS without touching this file:
+#   _CORS_ORIGINS  – comma-separated allow-list of explicit origins (default empty)
+#   _CORS_REGEX    – regex anchored to known bizkaia-api / frontend hosts
+
+substitutions:
+  _CORS_ORIGINS: ''
+  _CORS_REGEX: '^https://(bizkaia-api-[a-z0-9-]+\.a\.run\.app|frontend-[a-z0-9-]+\.vercel\.app|[a-z0-9-]+-alessandrovoltan-4656s-projects\.vercel\.app)$'
+
 steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
@@ -24,8 +36,9 @@ steps:
       - '--min-instances=0'
       - '--max-instances=5'
       - '--timeout=120'
-      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=bizkaia-data-pub,GCS_PREFIX=serving,ENVIRONMENT=production'
-      - '--no-allow-unauthenticated'
+      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=bizkaia-data-pub,GCS_PREFIX=serving,ENVIRONMENT=production,CORS_ORIGINS=${_CORS_ORIGINS},CORS_ORIGIN_REGEX=${_CORS_REGEX}'
+      - '--set-secrets=JWT_SECRET=bizkaia-jwt-secret:latest'
+      - '--allow-unauthenticated'
 
 images:
   - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'

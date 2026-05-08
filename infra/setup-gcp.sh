@@ -29,6 +29,14 @@ gcloud storage buckets create "gs://${BUCKET}" \
   --uniform-bucket-level-access \
   --public-access-prevention 2>/dev/null || echo "  (bucket already exists)"
 
+# Enable object versioning + 30-day soft-delete so an accidental
+# `sync-data.sh push --mirror` (or any rm) is recoverable. Idempotent: safe
+# to re-run on an existing bucket.
+echo "==> Enabling versioning + 30d soft-delete on gs://${BUCKET}"
+gcloud storage buckets update "gs://${BUCKET}" \
+  --versioning \
+  --soft-delete-duration=30d
+
 # Create folder structure
 echo "==> Creating bucket folder structure"
 echo "" | gcloud storage cp - "gs://${BUCKET}/serving/.keep"

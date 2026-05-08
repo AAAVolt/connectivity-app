@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Force Node.js runtime: the proxy uses Buffer.from() and arrayBuffer streaming
+// that require full Node primitives, not the Edge subset.
+export const runtime = "nodejs";
+// Disable Next.js route-segment caching: the proxy must always hit upstream.
+export const dynamic = "force-dynamic";
+// Belt-and-braces: never cache fetch responses for this route.
+export const fetchCache = "force-no-store";
+
 const CLOUD_RUN_URL = process.env.BACKEND_CLOUD_RUN_URL!;
 
 async function proxy(req: NextRequest, path: string): Promise<NextResponse> {

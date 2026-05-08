@@ -52,7 +52,7 @@ gcloud run deploy "${SERVICE}" \
   --min-instances=0 \
   --max-instances=5 \
   --timeout=120 \
-  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,CORS_ORIGINS=${CORS_ORIGINS:-},CORS_ORIGIN_REGEX=https://.*\\.(run\\.app|vercel\\.app)" \
+  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,CORS_ORIGINS=${CORS_ORIGINS:-},CORS_ORIGIN_REGEX=^https://(bizkaia-api-[a-z0-9-]+\\.a\\.run\\.app|frontend-[a-z0-9-]+\\.vercel\\.app|[a-z0-9-]+-alessandrovoltan-4656s-projects\\.vercel\\.app)\$" \
   --set-secrets="JWT_SECRET=${SECRET_NAME}:latest" \
   --allow-unauthenticated
 

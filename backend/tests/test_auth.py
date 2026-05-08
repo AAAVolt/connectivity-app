@@ -320,3 +320,15 @@ def test_insecure_secret_allowed_in_local() -> None:
     """Insecure secrets are fine in local development."""
     settings = Settings(environment="local", jwt_secret="dev-secret-change-me")
     assert settings.jwt_secret == "dev-secret-change-me"
+
+
+def test_unknown_environment_rejected() -> None:
+    """A typo'd ENVIRONMENT (e.g. 'prod') must fail startup, not silently disable auth."""
+    with pytest.raises(ValueError, match="ENVIRONMENT must be one of"):
+        Settings(environment="prod", jwt_secret=SECRET)
+
+
+def test_capitalised_environment_rejected() -> None:
+    """Casing must match exactly so 'Production' doesn't slip past the local-mode check."""
+    with pytest.raises(ValueError, match="ENVIRONMENT must be one of"):
+        Settings(environment="Production", jwt_secret=SECRET)

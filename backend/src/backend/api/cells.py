@@ -19,6 +19,11 @@ _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 DEFAULT_DEPARTURE_TIME = "08:00"
 ALLOWED_RESOLUTIONS = (250, 500, 1000)
 
+# Bizkaia 250 m grid is ~150k cells — cap at 200k to absorb growth while
+# preventing unbounded GeoJSON responses.
+MAX_GEOJSON_LIMIT = 200_000
+DEFAULT_GEOJSON_LIMIT = 200_000
+
 
 class TransportMode(str, Enum):
     TRANSIT = "TRANSIT"
@@ -232,10 +237,23 @@ def get_cells_geojson(
         DEFAULT_DEPARTURE_TIME,
         description="Departure time of day (HH:MM, 30-min intervals)",
     ),
+    limit: int = Query(
+        DEFAULT_GEOJSON_LIMIT,
+        ge=1,
+        le=MAX_GEOJSON_LIMIT,
+        description=f"Max features to return (1..{MAX_GEOJSON_LIMIT}). Pair with offset to paginate.",
+    ),
+    offset: int = Query(0, ge=0, description="Skip this many features (for pagination)."),
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> Response:
-    """Return grid cells as GeoJSON with scores or min travel times."""
+    """Return grid cells as GeoJSON with scores or min travel times.
+
+    Results are ordered by ``cell_code`` so pagination via ``limit``/``offset``
+    is deterministic. The response sets ``X-Returned-Features`` and
+    ``X-Has-More`` headers; clients can detect "more available" by checking
+    ``X-Has-More=true``.
+    """
     if resolution not in ALLOWED_RESOLUTIONS:
         raise HTTPException(
             status_code=400,
@@ -243,7 +261,10 @@ def get_cells_geojson(
         )
 
     dep_time = _validate_departure_time(departure_time)
-    cache_key = f"cells_geojson:{tenant.tenant_id}:{mode}:{purpose}:{metric.value}:{resolution}:{dep_time}"
+    cache_key = (
+        f"cells_geojson:{tenant.tenant_id}:{mode}:{purpose}:{metric.value}"
+        f":{resolution}:{dep_time}:{limit}:{offset}"
+    )
     cached = get_cached(cache_key)
     if cached is not None:
         return Response(
@@ -252,7 +273,13 @@ def get_cells_geojson(
             headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=3600"},
         )
 
-    params: dict[str, object] = {"tid": tenant.tenant_id, "dep_time": dep_time}
+    params: dict[str, object] = {
+        "tid": tenant.tenant_id,
+        "dep_time": dep_time,
+        # Fetch one extra row to detect whether more pages exist.
+        "limit": limit + 1,
+        "offset": offset,
+    }
     base_sql = _build_base_query(mode, purpose, metric, params)
 
     if resolution == 250:
@@ -260,13 +287,22 @@ def get_cells_geojson(
             SELECT id, cell_code, population, score,
                    ST_AsGeoJSON(geom) AS geometry
             FROM ({base_sql}) AS base
+            ORDER BY cell_code
+            LIMIT $limit OFFSET $offset
         """
     else:
         params["res"] = resolution
-        sql = _AGGREGATE_SQL.format(base_sql=base_sql)
+        sql = (
+            _AGGREGATE_SQL.format(base_sql=base_sql)
+            + "\n            ORDER BY cell_code\n            LIMIT $limit OFFSET $offset\n"
+        )
 
     result = db.execute(sql, params)
     rows = result.fetchall()
+
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
 
     features = []
     for row in rows:
@@ -289,7 +325,12 @@ def get_cells_geojson(
     return Response(
         content=content,
         media_type="application/geo+json",
-        headers={"Cache-Control": "public, max-age=300, stale-while-revalidate=3600"},
+        headers={
+            "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+            "X-Returned-Features": str(len(features)),
+            "X-Has-More": "true" if has_more else "false",
+            "X-Next-Offset": str(offset + len(features)) if has_more else "",
+        },
     )
 
 

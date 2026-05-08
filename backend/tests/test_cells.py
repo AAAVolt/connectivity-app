@@ -111,6 +111,53 @@ async def test_geojson_resolution_1000_accepted(_mock_db: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_geojson_limit_above_cap_rejected(_mock_db: MagicMock) -> None:
+    """limit values above MAX_GEOJSON_LIMIT must fail validation, not silently truncate."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/cells/geojson?limit=500000")
+
+    assert response.status_code == 422  # FastAPI/Pydantic validation error
+
+
+@pytest.mark.asyncio
+async def test_geojson_negative_offset_rejected(_mock_db: MagicMock) -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/cells/geojson?offset=-1")
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_geojson_pagination_headers(_mock_db: MagicMock) -> None:
+    """When the row count equals limit+1, X-Has-More must be true."""
+    GeoRow = namedtuple("GeoRow", ["id", "cell_code", "population", "score", "geometry"])
+    # Backend asks for limit+1 rows; with limit=2 we return 3 to trigger has_more.
+    rows = [
+        GeoRow(i, f"E{i}_N0", 100.0, 50.0, '{"type":"Point","coordinates":[0,0]}')
+        for i in range(3)
+    ]
+    result_mock = MagicMock()
+    result_mock.fetchall.return_value = rows
+    _mock_db.execute.return_value = result_mock
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/cells/geojson?limit=2&offset=0")
+
+    assert response.status_code == 200
+    assert response.headers["X-Returned-Features"] == "2"
+    assert response.headers["X-Has-More"] == "true"
+    assert response.headers["X-Next-Offset"] == "2"
+    data = response.json()
+    assert len(data["features"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_get_cell_found(_mock_db: MagicMock) -> None:
     cell_row = CellRow(
         id=1,

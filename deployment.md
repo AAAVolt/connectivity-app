@@ -27,6 +27,23 @@ All analytics data is stored as Parquet files in `gs://bizkaia-data-pub/serving/
 
 There is no database. DuckDB reads directly from these Parquet files into memory at startup.
 
+### Data-loss protection
+
+The bucket has **object versioning** + **30-day soft-delete** enabled. `infra/setup-gcp.sh` applies these settings (idempotent — re-run it on the live bucket to enforce them). Recovery commands:
+
+```bash
+# List soft-deleted objects from the last 30 days
+gcloud storage ls --soft-deleted gs://bizkaia-data-pub/serving/
+
+# Restore a specific object (replace <generation> with the value from the listing)
+gcloud storage restore gs://bizkaia-data-pub/serving/<file>.parquet#<generation>
+
+# List non-current versions (created when an object is overwritten)
+gcloud storage ls --all-versions gs://bizkaia-data-pub/serving/
+```
+
+`scripts/sync-data.sh` is now additive by default; the destructive path requires `--mirror` and prints a confirmation prompt.
+
 ---
 
 ## API — Google Cloud Run
