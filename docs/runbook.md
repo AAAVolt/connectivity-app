@@ -164,7 +164,49 @@ Existing tokens issued under the old secret will fail validation immediately. Pu
 
 ---
 
-## 7. Restoring deleted GCS data
+## 7. Bootstrapping staging from scratch
+
+The staging environment lives in its own GCP project (`bizkaia-conn-staging`) with its own bucket and Cloud Run service. Initial setup is a one-shot:
+
+```bash
+# 1. Create the staging GCP project (do this in the console once)
+#    https://console.cloud.google.com/projectcreate
+#    Project ID: bizkaia-conn-staging
+#    Link the same billing account as prod.
+
+# 2. Provision GCP resources (bucket, SA, Artifact Registry)
+bash infra/setup-gcp.sh staging
+
+# 3. Seed staging with prod data (one-way snapshot — no reverse sync)
+gcloud storage cp 'gs://bizkaia-data-pub/serving/*.parquet' \
+  gs://bizkaia-data-staging/serving/
+
+# 4. Deploy the API
+bash infra/deploy.sh staging
+
+# 5. Smoke test
+STAGING_URL=$(gcloud run services describe bizkaia-api-staging \
+  --region=europe-southwest1 --project=bizkaia-conn-staging \
+  --format='value(status.url)')
+curl -fsS "${STAGING_URL}/readiness"
+
+# 6. Run the load test against staging
+BASE_URL="${STAGING_URL}" k6 run loadtest/cells.js
+```
+
+After bootstrap, every change goes:
+
+```
+PR → CI runs tests → merge to main → Cloud Build deploys to prod
+                                  ↓
+                           manual: deploy.sh staging
+                                  ↓
+                           verify on staging → manual prod deploy
+```
+
+> **Don't sync staging data back to prod.** Treat staging as write-anything; prod data is the authoritative source.
+
+## 8. Restoring deleted GCS data
 
 Versioning + 30-day soft-delete is enabled (Wave 1). To recover an accidentally-deleted Parquet file:
 

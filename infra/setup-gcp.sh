@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 # Bizkaia Connectivity – GCP infrastructure setup
-# Run once: bash infra/setup-gcp.sh
+#
+# Usage:
+#   bash infra/setup-gcp.sh [prod|staging]
+#
+# Idempotent: re-running on an existing project / bucket / service account
+# is safe. Creates whatever's missing, applies versioning + soft-delete on
+# the bucket, and configures Docker auth.
 set -euo pipefail
 
-PROJECT_ID="bizkaia-conn-pub"
-REGION="europe-southwest1"          # Madrid – closest to Bizkaia
-BUCKET="bizkaia-data-pub"
-SA_NAME="bizkaia-backend"
-SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-AR_REPO="bizkaia-images"
-CLOUD_RUN_SERVICE="bizkaia-api"
+TARGET="${1:-prod}"
+ENV_FILE="infra/env/${TARGET}.env"
 
+if [ ! -f "${ENV_FILE}" ]; then
+  echo "ERROR: env file not found: ${ENV_FILE}"
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
+
+SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+
+echo "==> Target: ${TARGET}  (project: ${PROJECT_ID})"
 echo "==> Setting project to ${PROJECT_ID}"
 gcloud config set project "${PROJECT_ID}"
 
@@ -45,7 +57,7 @@ echo "" | gcloud storage cp - "gs://${BUCKET}/raw/.keep"
 # ── Service Account ───────────────────────────────────────
 echo "==> Creating service account ${SA_NAME}"
 gcloud iam service-accounts create "${SA_NAME}" \
-  --display-name="Bizkaia Backend (Cloud Run)" 2>/dev/null || echo "  (SA already exists)"
+  --display-name="Bizkaia Backend (${TARGET})" 2>/dev/null || echo "  (SA already exists)"
 
 # Grant storage read access
 echo "==> Granting storage.objectViewer to SA"
@@ -58,7 +70,7 @@ echo "==> Creating Artifact Registry repo"
 gcloud artifacts repositories create "${AR_REPO}" \
   --repository-format=docker \
   --location="${REGION}" \
-  --description="Bizkaia Connectivity Docker images" 2>/dev/null || echo "  (repo already exists)"
+  --description="Bizkaia Connectivity Docker images (${TARGET})" 2>/dev/null || echo "  (repo already exists)"
 
 # Configure docker auth for this registry
 echo "==> Configuring Docker auth"
@@ -70,7 +82,7 @@ IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}"
 cat <<EOF
 
 ============================================================
-  GCP setup complete!
+  GCP setup complete for ${TARGET}!
 ============================================================
 
   Project:          ${PROJECT_ID}
@@ -81,23 +93,10 @@ cat <<EOF
 
   Next steps:
 
-  1. Build & push the backend image:
-     docker build -f docker/cloudrun.Dockerfile -t ${IMAGE_BASE}/${CLOUD_RUN_SERVICE}:latest .
-     docker push ${IMAGE_BASE}/${CLOUD_RUN_SERVICE}:latest
-
-  2. Deploy to Cloud Run:
-     gcloud run deploy ${CLOUD_RUN_SERVICE} \\
-       --image=${IMAGE_BASE}/${CLOUD_RUN_SERVICE}:latest \\
-       --region=${REGION} \\
-       --service-account=${SA_EMAIL} \\
-       --memory=2Gi \\
-       --cpu=1 \\
-       --min-instances=0 \\
-       --max-instances=5 \\
-       --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production" \\
-       --no-allow-unauthenticated
-
-  3. Upload serving data:
+  1. Upload serving data:
      gcloud storage cp data/serving/*.parquet gs://${BUCKET}/serving/
+
+  2. Deploy the backend:
+     bash infra/deploy.sh ${TARGET}
 
 EOF

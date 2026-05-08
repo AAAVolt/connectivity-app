@@ -1,18 +1,36 @@
 #!/usr/bin/env bash
-# Bizkaia Connectivity – Build and deploy to Cloud Run
-# Usage: bash infra/deploy.sh
+# Bizkaia Connectivity – Build and deploy to Cloud Run.
+#
+# Usage:
+#   bash infra/deploy.sh [prod|staging]
+#
+# Defaults to prod. Per-target config (project, bucket, service name, sizing)
+# lives in infra/env/<target>.env so the script itself stays generic.
 set -euo pipefail
 
-PROJECT_ID="bizkaia-conn-pub"
-REGION="europe-southwest1"
-AR_REPO="bizkaia-images"
-SERVICE="bizkaia-api"
-SA_EMAIL="bizkaia-backend@${PROJECT_ID}.iam.gserviceaccount.com"
-BUCKET="bizkaia-data-pub"
+TARGET="${1:-prod}"
+ENV_FILE="infra/env/${TARGET}.env"
+
+if [ ! -f "${ENV_FILE}" ]; then
+  echo "ERROR: env file not found: ${ENV_FILE}"
+  echo "Available targets:"
+  ls infra/env/*.env 2>/dev/null | xargs -n1 basename | sed 's/\.env$//' | sed 's/^/  /'
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
+
+SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${SERVICE}"
 TAG="${IMAGE}:$(date +%Y%m%d-%H%M%S)"
 TAG_LATEST="${IMAGE}:latest"
-SECRET_NAME="bizkaia-jwt-secret"
+
+echo "==> Target: ${TARGET}"
+echo "    Project: ${PROJECT_ID}"
+echo "    Service: ${SERVICE}"
+echo "    Bucket:  ${BUCKET}"
+echo ""
 
 # ── Ensure JWT secret exists in Secret Manager ──
 echo "==> Checking Secret Manager for ${SECRET_NAME}"
@@ -47,17 +65,19 @@ gcloud run deploy "${SERVICE}" \
   --region="${REGION}" \
   --project="${PROJECT_ID}" \
   --service-account="${SA_EMAIL}" \
-  --memory=2Gi \
-  --cpu=1 \
-  --min-instances=0 \
-  --max-instances=5 \
-  --timeout=120 \
-  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=production,CORS_ORIGINS=${CORS_ORIGINS:-},CORS_ORIGIN_REGEX=^https://(bizkaia-api-[a-z0-9-]+\\.a\\.run\\.app|frontend-[a-z0-9-]+\\.vercel\\.app|[a-z0-9-]+-alessandrovoltan-4656s-projects\\.vercel\\.app)\$" \
+  --memory="${MEMORY}" \
+  --cpu="${CPU}" \
+  --min-instances="${MIN_INSTANCES}" \
+  --max-instances="${MAX_INSTANCES}" \
+  --timeout="${TIMEOUT_SECONDS}" \
+  --startup-probe="httpGet.path=/readiness,initialDelaySeconds=5,periodSeconds=5,failureThreshold=20" \
+  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=${ENVIRONMENT},CORS_ORIGINS=${CORS_ORIGINS:-},CORS_ORIGIN_REGEX=${CORS_ORIGIN_REGEX}" \
   --set-secrets="JWT_SECRET=${SECRET_NAME}:latest" \
   --allow-unauthenticated
 
 URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --project="${PROJECT_ID}" --format="value(status.url)")
 echo ""
 echo "==> Deployed!"
-echo "    URL: ${URL}"
-echo "    Docs: ${URL}/docs"
+echo "    Target: ${TARGET}"
+echo "    URL:    ${URL}"
+echo "    Docs:   ${URL}/docs"

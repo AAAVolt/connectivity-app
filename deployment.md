@@ -1,5 +1,21 @@
 # Bizkaia Connectivity – Deployment Reference
 
+## Environments
+
+Two GCP projects, one bucket per project:
+
+| | Production | Staging |
+|---|---|---|
+| Project | `bizkaia-conn-pub` | `bizkaia-conn-staging` |
+| Bucket | `gs://bizkaia-data-pub` | `gs://bizkaia-data-staging` |
+| Cloud Run service | `bizkaia-api` | `bizkaia-api-staging` |
+| Region | `europe-southwest1` | `europe-southwest1` |
+| Env file | `infra/env/prod.env` | `infra/env/staging.env` |
+
+`infra/deploy.sh prod` and `infra/deploy.sh staging` source the matching env file. `infra/setup-gcp.sh staging` provisions the staging project from scratch (idempotent).
+
+The staging account/billing is a separate GCP project so a runaway test, a misconfig, or an IAM mistake can't reach prod. Auto-traffic from CI / preview branches should target staging; manual promotion is required for prod.
+
 ## Data — Google Cloud Storage
 
 **Bucket:** `gs://bizkaia-data-pub`
