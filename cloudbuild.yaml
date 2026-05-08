@@ -11,7 +11,26 @@ substitutions:
   _CORS_REGEX: '^https://(bizkaia-api-[a-z0-9-]+\.a\.run\.app|frontend-[a-z0-9-]+\.vercel\.app|[a-z0-9-]+-alessandrovoltan-4656s-projects\.vercel\.app)$'
 
 steps:
-  - name: 'gcr.io/cloud-builders/docker'
+  # ─── Run backend tests before building/deploying ─────────────────────────
+  # A failing test must block the deploy. We can't run pytest inside the
+  # production image (it has no dev deps and runs as a non-root user), so
+  # spin up a fresh python container in the workspace and pip-install only
+  # what pytest needs.
+  - id: backend-tests
+    name: python:3.11-slim
+    entrypoint: bash
+    dir: backend
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        pip install --quiet --upgrade pip
+        pip install --quiet . pytest pytest-asyncio httpx
+        python -m pytest -x --tb=short
+
+  - id: build-image
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['backend-tests']
     args:
       - 'build'
       - '-f'
@@ -22,7 +41,9 @@ steps:
       - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:latest'
       - '.'
 
-  - name: 'gcr.io/cloud-builders/gcloud'
+  - id: deploy
+    name: 'gcr.io/cloud-builders/gcloud'
+    waitFor: ['build-image']
     args:
       - 'run'
       - 'deploy'
