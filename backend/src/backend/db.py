@@ -19,6 +19,7 @@ import duckdb
 import structlog
 
 from backend.config import Settings, get_settings
+from backend.contracts import assert_loaded_table
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -226,6 +227,12 @@ def _load_table(conn: duckdb.DuckDBPyConnection, table: str, path: Path) -> None
     conn.execute(
         f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM read_parquet('{path}')"
     )
+
+    # Validate the schema contract before any column renames so the contract
+    # speaks the original GeoParquet column names. A drift here aborts
+    # init_db and surfaces in /readiness as a 503 instead of corrupting
+    # API responses at request time.
+    assert_loaded_table(conn, table)
 
     # Normalise geometry column name: GeoParquet uses 'geometry' but our
     # SQL layer expects 'geom' everywhere.
