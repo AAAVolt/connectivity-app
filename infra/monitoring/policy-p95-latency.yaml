@@ -1,0 +1,27 @@
+# Alert when p95 request latency exceeds 2s over a 5-minute window.
+# Cloud Run emits run.googleapis.com/request_latencies as a distribution.
+
+displayName: "Bizkaia API · p95 latency > 2s"
+combiner: OR
+conditions:
+  - displayName: "p95 latency > 2000ms (5m rolling)"
+    conditionThreshold:
+      filter: |
+        resource.type = "cloud_run_revision"
+        AND resource.labels.service_name = "bizkaia-api"
+        AND metric.type = "run.googleapis.com/request_latencies"
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_PERCENTILE_95
+          crossSeriesReducer: REDUCE_PERCENTILE_95
+      comparison: COMPARISON_GT
+      thresholdValue: 2000  # milliseconds
+      duration: 300s
+      trigger:
+        count: 1
+
+notificationChannels:
+  - "projects/bizkaia-conn-pub/notificationChannels/REPLACE_ME"
+
+alertStrategy:
+  autoClose: 86400s

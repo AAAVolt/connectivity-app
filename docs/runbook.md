@@ -101,7 +101,7 @@ Then file a postmortem and revert the offending commit on `main` so the next dep
 
 ## 4. What to watch during a rollout
 
-Until the Cloud Monitoring alert policies (see `docs/monitoring.md`) are wired to a notification channel, watch these by hand:
+Until the Cloud Monitoring alert policies in [`infra/monitoring/`](../infra/monitoring/README.md) are wired to a notification channel, watch these by hand:
 
 | Metric | Where | Threshold |
 |---|---|---|
