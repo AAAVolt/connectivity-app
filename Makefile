@@ -6,7 +6,8 @@ COMPOSE := docker compose -f docker-compose.local.yml
 .PHONY: up down build logs restart \
         backend-shell worker-shell \
         test test-backend test-frontend \
-        seed routing upload clean
+        seed routing upload clean \
+        pipeline repro dag
 
 # ── Lifecycle ───────────────────────────────────────────
 
@@ -63,8 +64,16 @@ seed:            ## Run worker demo data pipeline
 import:          ## Import real data from GeoEuskadi
 	$(COMPOSE) run --rm worker python -m worker.cli import-geoeuskadi
 
-pipeline:        ## Run full production pipeline
+pipeline:        ## Run full production pipeline (linear, no skip-on-unchanged)
 	$(COMPOSE) run --rm worker python -m worker.cli run-pipeline
+
+repro:           ## Run the DVC pipeline (skips stages whose inputs are unchanged)
+	@command -v dvc >/dev/null 2>&1 || { echo "Install dvc first: brew install dvc OR pipx install dvc"; exit 1; }
+	dvc repro
+
+dag:             ## Print the DVC pipeline DAG
+	@command -v dvc >/dev/null 2>&1 || { echo "Install dvc first: brew install dvc OR pipx install dvc"; exit 1; }
+	dvc dag
 
 # ── GCS Upload ──────────────────────────────────────────
 

@@ -1,0 +1,163 @@
+# DVC pipeline definition — uses DVC as a task runner with a DAG.
+#
+# WHY DVC:
+#   The previous pipeline was 7 sequential `make` targets with no dependency
+#   tracking; if step 4 of 7 changed inputs, you re-ran everything by hand.
+#   `dvc repro` only re-runs stages whose inputs actually changed.
+#
+# WHAT DVC IS NOT DOING HERE:
+#   We deliberately don't use DVC's storage remote. Data lives in GCS and
+#   is managed by `scripts/sync-data.sh`. Every `outs:` entry has
+#   `cache: false` so DVC tracks dependency hashes for stage-skipping but
+#   doesn't try to push/pull the actual file contents.
+#
+# USAGE:
+#   pip install dvc          # one-time
+#   dvc repro                # run the full DAG, skipping unchanged stages
+#   dvc repro compute_scores # re-run a single stage and its descendants
+#   dvc dag                  # visualise the dependency graph
+#
+# STAGE GROUPS:
+#   raw       → ingest external sources (boundaries, population shapefiles)
+#   prepare   → build the grid, disaggregate population, export r5r inputs
+#   route     → R5R compute (separate Docker container)
+#   score     → import travel times and compute connectivity scores
+#   enrich    → optional sociodemographic + GTFS layers (independent)
+
+stages:
+
+  # ─── Raw ingestion ──────────────────────────────────────────────────────
+
+  import_geoeuskadi:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-geoeuskadi
+    desc: "Fetch boundaries, municipalities, comarcas, destinations from GeoEuskadi"
+    outs:
+      - data/serving/boundaries.parquet:       { cache: false }
+      - data/serving/municipalities.parquet:   { cache: false }
+      - data/serving/comarcas.parquet:         { cache: false }
+      - data/serving/destinations.parquet:     { cache: false }
+      - data/serving/destination_types.parquet: { cache: false }
+
+  import_population:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-population --serving-dir /data/serving
+    desc: "Import EUSTAT population per sección"
+    deps:
+      - data/raw  # depends on the population shapefile + CSV
+    outs:
+      - data/serving/population_sources.parquet: { cache: false }
+
+  import_nucleos:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-nucleos --serving-dir /data/serving
+    desc: "Import populated-place polygons used for dasymetric masking"
+    deps:
+      - data/raw
+    outs:
+      - data/serving/nucleos.parquet: { cache: false }
+
+  # ─── Grid + population disaggregation ──────────────────────────────────
+  # build_grid and disaggregate_population both mutate grid_cells.parquet,
+  # so they must be a single DVC stage (DVC requires unique output ownership).
+
+  build_grid_with_population:
+    cmd: |
+      docker compose -f docker-compose.local.yml run --rm worker bash -c '
+        python -m worker.cli build-grid --serving-dir /data/serving &&
+        python -m worker.cli disaggregate-population --serving-dir /data/serving
+      '
+    desc: "Generate the 250 m grid and disaggregate population into it"
+    deps:
+      - data/serving/boundaries.parquet
+      - data/serving/population_sources.parquet
+      - data/serving/nucleos.parquet
+    outs:
+      - data/serving/grid_cells.parquet: { cache: false }
+
+  # ─── R5R routing (runs in its own container) ───────────────────────────
+
+  export_r5r_inputs:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli export-r5r --serving-dir /data/serving
+    desc: "Write origins.csv + destinations.csv for r5r"
+    deps:
+      - data/serving/grid_cells.parquet
+      - data/serving/destinations.parquet
+    outs:
+      - data/network/origins.csv:      { cache: false }
+      - data/network/destinations.csv: { cache: false }
+
+  compute_travel_times:
+    cmd: docker compose -f docker-compose.local.yml run --rm r5r
+    desc: "R5R: compute travel-time matrices for every (mode, departure slot)"
+    deps:
+      - data/network/origins.csv
+      - data/network/destinations.csv
+      - data/network        # GTFS zips + OSM .pbf live here
+      - r5r/scripts/compute_travel_matrices.R
+      - r5r/scripts/check_gtfs_validity.R
+      - r5r/config/r5r_config.yaml
+    outs:
+      - data/output: { cache: false, persist: true }
+
+  # ─── Scoring ───────────────────────────────────────────────────────────
+
+  import_travel_times:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-travel-times --serving-dir /data/serving
+    desc: "Load r5r ttm_*.parquet into min_travel_times.parquet"
+    deps:
+      - data/output
+      - data/serving/grid_cells.parquet
+      - data/serving/destinations.parquet
+    outs:
+      - data/serving/min_travel_times.parquet: { cache: false }
+
+  compute_scores:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli compute-scores --serving-dir /data/serving
+    desc: "Compute connectivity + combined scores per cell × purpose × mode"
+    deps:
+      - data/serving/grid_cells.parquet
+      - data/serving/min_travel_times.parquet
+      - data/serving/destinations.parquet
+      - worker/src/worker/scoring  # any change to scoring logic invalidates this stage
+    outs:
+      - data/serving/connectivity_scores.parquet: { cache: false }
+      - data/serving/combined_scores.parquet:     { cache: false }
+
+  # ─── Sociodemographic + GTFS enrichment (independent of scoring) ───────
+
+  import_demographics:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-demographics --serving-dir /data/serving
+    desc: "Population by age group per municipality"
+    deps: [data/raw]
+    outs:
+      - data/serving/municipality_demographics.parquet: { cache: false }
+
+  import_income:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-income --serving-dir /data/serving
+    desc: "Per-municipality income indicators"
+    deps: [data/raw]
+    outs:
+      - data/serving/municipality_income.parquet: { cache: false }
+
+  import_car_ownership:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-car-ownership --serving-dir /data/serving
+    desc: "Vehicles per inhabitant by municipality"
+    deps: [data/raw]
+    outs:
+      - data/serving/municipality_car_ownership.parquet: { cache: false }
+
+  import_gtfs_shapes:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli import-gtfs-shapes --serving-dir /data/serving
+    desc: "Stops + route geometries from GTFS feeds"
+    deps:
+      - data/gtfs
+    outs:
+      - data/serving/gtfs_stops.parquet:  { cache: false }
+      - data/serving/gtfs_routes.parquet: { cache: false }
+
+  compute_frequency:
+    cmd: docker compose -f docker-compose.local.yml run --rm worker python -m worker.cli compute-frequency --serving-dir /data/serving
+    desc: "Per-stop service frequency (departures per hour)"
+    deps:
+      - data/gtfs
+      - data/serving/gtfs_stops.parquet
+    outs:
+      - data/serving/stop_frequency.parquet: { cache: false }

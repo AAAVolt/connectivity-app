@@ -95,6 +95,25 @@ The script syncs these directories:
 | `make clean` | Stop containers and remove built images |
 | `make help` | Show all available commands |
 
+## Pipeline orchestration
+
+Two ways to run the data pipeline:
+
+| Command | When to use |
+|---|---|
+| `make pipeline` | Quick run that always re-executes every step. Good for first-time runs or when you've changed code in many stages. |
+| `make repro` | DVC-aware run that **skips stages whose inputs haven't changed**. Use this for iteration — fix one stage, re-run, only that stage and its descendants execute. |
+
+`make dag` prints the dependency graph. `dvc.yaml` declares the stages.
+
+DVC here is configured as a *task runner with a DAG* — it doesn't manage data storage. GCS sync via `scripts/sync-data.sh` remains the source of truth.
+
+```bash
+brew install dvc      # one-time
+make repro            # run only what changed
+make dag              # see the graph
+```
+
 ## Architecture
 
 ```
