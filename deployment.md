@@ -103,6 +103,12 @@ The `/admin/reload` endpoint requires a JWT with `role: admin`.
 
 ---
 
+## On-call runbook
+
+For rollback procedures, canary rollouts, common incident response, and JWT rotation, see [`docs/runbook.md`](docs/runbook.md).
+
+---
+
 ## Common operations
 
 ### Update serving data
