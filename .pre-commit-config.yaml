@@ -1,0 +1,42 @@
+# Pre-commit hook config — install with `pip install pre-commit && pre-commit install`.
+# Runs locally before each commit; CI also runs `pre-commit run --all-files`.
+#
+# Primary goal: stop secrets from leaking into git. Other hooks are cheap
+# hygiene that catch common mistakes before they hit a PR.
+
+repos:
+  # ─── Secret scanning ─────────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        name: gitleaks (block secrets in commits)
+
+  # ─── Generic hygiene ─────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-yaml
+        # cloudbuild.yaml uses $PROJECT_ID substitution syntax that yaml.safe_load
+        # rejects; allow it to pass.
+        args: [--allow-multiple-documents]
+        exclude: ^cloudbuild\.yaml$
+      - id: check-toml
+      - id: check-json
+        exclude: ^frontend/tsconfig\.json$  # contains JSONC comments
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # ─── Python ──────────────────────────────────────────────────────────────
+  # Cheap syntax + import order checks; no formatting changes.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(backend|worker)/.*\.py$

@@ -34,6 +34,17 @@ That's it. Open:
 - **Frontend** — http://localhost:3000
 - **API docs** — http://localhost:8000/docs
 
+## Pre-commit hooks
+
+Install once after cloning so secret scans + hygiene checks run before every commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+CI runs `gitleaks` on every PR regardless, so the local hook is mainly a fast-fail for your own machine.
+
 ## Data sync
 
 All data files (GTFS feeds, OSM network, travel time matrices, POIs, shapefiles) live in a GCS bucket and are **not** checked into git. Use the sync script to push/pull:

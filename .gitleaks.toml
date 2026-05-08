@@ -1,0 +1,24 @@
+# Gitleaks config — extends the default rule set, adds repo-specific allowlists.
+# Run manually with: gitleaks protect --staged --config .gitleaks.toml
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Repo-wide allowlist for known-safe strings."
+paths = [
+    # Test fixtures intentionally use placeholder credentials.
+    '''backend/tests/.*''',
+    # Frontend lockfile contains base64 hashes that look like secrets.
+    '''frontend/pnpm-lock\.yaml''',
+    # Archived legacy schema may contain placeholder GUIDs.
+    '''docs/archive/postgis-legacy/.*''',
+]
+regexes = [
+    # JWT test secrets used in test_auth.py
+    '''test-secret-key''',
+    # Audit-known placeholder
+    '''dev-secret-change-me''',
+    # Demo tenant UUID
+    '''00000000-0000-0000-0000-000000000001''',
+]
