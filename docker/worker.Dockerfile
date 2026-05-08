@@ -1,6 +1,7 @@
 # Worker image – DuckDB/GeoPandas-based, no PostGIS.
 # Build context: repo root (.)
-FROM python:3.11-slim AS base
+# Base image pinned by digest — keep in sync with the other Python images.
+FROM python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2 AS base
 
 RUN groupadd -r app && useradd -r -g app -d /app app
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -1,6 +1,9 @@
 # Cloud Run backend image – DuckDB-based, no PostGIS.
 # Build context: repo root (.)
-FROM python:3.11-slim AS base
+# Base image pinned by digest for reproducible builds. Refresh periodically
+# (`docker buildx imagetools inspect python:3.11-slim`) to pick up security
+# patches; the floating tag is kept as a comment for the manual refresh.
+FROM python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2 AS base
 
 RUN groupadd -r app && useradd -r -g app -d /app app
 WORKDIR /app
