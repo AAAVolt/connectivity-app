@@ -1,0 +1,87 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard",
+    ":enableVulnerabilityAlertsWithLabel(security)"
+  ],
+  "timezone": "Europe/Madrid",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "dependencies"]
+  },
+  "packageRules": [
+    {
+      "description": "Group all GitHub Actions bumps into one PR weekly",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "automerge": false
+    },
+    {
+      "description": "Pin Docker base images by digest (we use FROM python@sha256:...)",
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true
+    },
+    {
+      "description": "Patch updates: auto-merge after CI passes",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Minor updates: still auto-merge for dev tooling, manual for runtime deps",
+      "matchUpdateTypes": ["minor"],
+      "matchPackageNames": [
+        "ruff",
+        "pytest",
+        "pytest-asyncio",
+        "httpx",
+        "pre-commit",
+        "gitleaks/gitleaks-action",
+        "actions/checkout",
+        "actions/setup-python",
+        "actions/setup-node",
+        "pnpm/action-setup",
+        "actions/dependency-review-action"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Major version bumps require human review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "addLabels": ["major-bump"]
+    },
+    {
+      "description": "Don't churn on indirect/lockfile-only frontend deps individually — group them",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "groupName": "npm-dev-dependencies"
+    },
+    {
+      "description": "Group Python dev deps separately from runtime",
+      "matchManagers": ["poetry"],
+      "matchDepTypes": ["dev-dependencies"],
+      "groupName": "python-dev-dependencies"
+    },
+    {
+      "description": "Next.js + React are tightly coupled; bump together",
+      "matchPackageNames": ["next", "react", "react-dom", "@types/react", "@types/react-dom"],
+      "groupName": "react-and-next"
+    }
+  ],
+  "ignorePaths": [
+    "docs/archive/**",
+    "**/node_modules/**",
+    "**/.venv/**"
+  ]
+}

@@ -34,6 +34,12 @@ That's it. Open:
 - **Frontend** — http://localhost:3000
 - **API docs** — http://localhost:8000/docs
 
+## Dependency updates
+
+`renovate.json` configures Renovate to open PRs for outdated deps every Monday. Patch + digest bumps auto-merge after CI passes; minors auto-merge for dev tooling; majors require human review.
+
+To enable on the GitHub repo: install the **Renovate** GitHub App from https://github.com/apps/renovate and grant access. The config in `renovate.json` is picked up automatically.
+
 ## Pre-commit hooks
 
 Install once after cloning so secret scans + hygiene checks run before every commit:
