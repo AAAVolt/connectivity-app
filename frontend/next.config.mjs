@@ -1,6 +1,11 @@
 /** @type {import('next').NextConfig} */
 
+import withBundleAnalyzer from "@next/bundle-analyzer";
+
 const isProd = process.env.NODE_ENV === "production";
+const bundleAnalyzer = withBundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
+});
 
 // External origins the MapLibre map fetches tiles, sprites, and metadata from.
 // If a new basemap is added in components/connectivity-map.tsx, add its origin here.
@@ -73,4 +78,4 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+export default bundleAnalyzer(nextConfig);
