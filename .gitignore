@@ -55,3 +55,7 @@ htmlcov/
 coverage/
 .local/
 .cache/
+# Playwright
+playwright-report/
+test-results/
+playwright/.cache/
