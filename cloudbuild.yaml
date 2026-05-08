@@ -11,14 +11,18 @@ substitutions:
   _CORS_REGEX: '^https://(bizkaia-api-[a-z0-9-]+\.a\.run\.app|frontend-[a-z0-9-]+\.vercel\.app|[a-z0-9-]+-alessandrovoltan-4656s-projects\.vercel\.app)$'
 
 steps:
-  # ─── Run backend tests before building/deploying ─────────────────────────
+  # ─── Run backend + worker tests before building/deploying ──────────────
   # A failing test must block the deploy. We can't run pytest inside the
   # production image (it has no dev deps and runs as a non-root user), so
-  # spin up a fresh python container in the workspace and pip-install only
-  # what pytest needs.
+  # spin up fresh python containers in the workspace and pip-install only
+  # what pytest needs. Both jobs run in parallel — Cloud Build's default
+  # waitFor is the previous step, but we override to `-` to make them
+  # depend on nothing (i.e. run as soon as the build starts).
+
   - id: backend-tests
     name: python:3.11-slim
     entrypoint: bash
+    waitFor: ['-']
     dir: backend
     args:
       - -c
@@ -28,9 +32,25 @@ steps:
         pip install --quiet . pytest pytest-asyncio httpx
         python -m pytest -x --tb=short
 
+  - id: worker-tests
+    name: python:3.11-slim
+    entrypoint: bash
+    waitFor: ['-']
+    dir: worker
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        # geopandas needs system GDAL; install once, then deps + the package.
+        apt-get update -qq && apt-get install -y --no-install-recommends \
+          libgdal-dev gcc g++ >/dev/null
+        pip install --quiet --upgrade pip
+        pip install --quiet . pytest
+        python -m pytest -x --tb=short
+
   - id: build-image
     name: 'gcr.io/cloud-builders/docker'
-    waitFor: ['backend-tests']
+    waitFor: ['backend-tests', 'worker-tests']
     args:
       - 'build'
       - '-f'
