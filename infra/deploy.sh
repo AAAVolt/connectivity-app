@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Bizkaia Connectivity – Build and deploy to Cloud Run.
+# Bizkaia Connectivity – Build and deploy to Cloud Run via Cloud Build.
 #
 # Usage:
 #   bash infra/deploy.sh [prod|staging]
 #
-# Defaults to prod. Per-target config (project, bucket, service name, sizing)
-# lives in infra/env/<target>.env so the script itself stays generic.
+# Defaults to prod. Per-target config lives in infra/env/<target>.env.
+#
+# Build + image push + Cloud Run deploy all happen in Cloud Build using
+# cloudbuild.yaml as the source of truth — there's no local Docker
+# requirement, so this works from any laptop without Docker Desktop.
 set -euo pipefail
 
 TARGET="${1:-prod}"
@@ -22,9 +25,6 @@ fi
 source "${ENV_FILE}"
 
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${SERVICE}"
-TAG="${IMAGE}:$(date +%Y%m%d-%H%M%S)"
-TAG_LATEST="${IMAGE}:latest"
 
 echo "==> Target: ${TARGET}"
 echo "    Project: ${PROJECT_ID}"
@@ -33,6 +33,8 @@ echo "    Bucket:  ${BUCKET}"
 echo ""
 
 # ── Ensure JWT secret exists in Secret Manager ──
+# Pre-flight check, since Cloud Build's deploy step assumes the secret
+# already exists. This is a one-time bootstrap.
 echo "==> Checking Secret Manager for ${SECRET_NAME}"
 if ! gcloud secrets describe "${SECRET_NAME}" --project="${PROJECT_ID}" &>/dev/null; then
   echo "  Creating new secret and generating random value..."
@@ -42,7 +44,6 @@ if ! gcloud secrets describe "${SECRET_NAME}" --project="${PROJECT_ID}" &>/dev/n
     --locations="${REGION}"
   openssl rand -base64 32 | tr -d '\n' | \
     gcloud secrets versions add "${SECRET_NAME}" --project="${PROJECT_ID}" --data-file=-
-  # Grant the Cloud Run SA read access
   gcloud secrets add-iam-policy-binding "${SECRET_NAME}" \
     --project="${PROJECT_ID}" \
     --member="serviceAccount:${SA_EMAIL}" \
@@ -52,28 +53,29 @@ else
   echo "  Secret already exists."
 fi
 
-echo "==> Building image"
-docker build --platform linux/amd64 -f docker/cloudrun.Dockerfile -t "${TAG}" -t "${TAG_LATEST}" .
-
-echo "==> Pushing to Artifact Registry"
-docker push "${TAG}"
-docker push "${TAG_LATEST}"
-
-echo "==> Deploying to Cloud Run"
-gcloud run deploy "${SERVICE}" \
-  --image="${TAG}" \
-  --region="${REGION}" \
+# ── Submit the build ──
+# Substitutions match the names declared in cloudbuild.yaml. We escape the
+# CORS regex's commas because gcloud's --substitutions parser splits on
+# them at the top level.
+echo "==> Submitting build to Cloud Build (project: ${PROJECT_ID})"
+gcloud builds submit \
   --project="${PROJECT_ID}" \
-  --service-account="${SA_EMAIL}" \
-  --memory="${MEMORY}" \
-  --cpu="${CPU}" \
-  --min-instances="${MIN_INSTANCES}" \
-  --max-instances="${MAX_INSTANCES}" \
-  --timeout="${TIMEOUT_SECONDS}" \
-  --startup-probe="httpGet.path=/readiness,initialDelaySeconds=5,periodSeconds=5,failureThreshold=20" \
-  --set-env-vars="DATA_SOURCE=gcs,GCS_BUCKET=${BUCKET},GCS_PREFIX=serving,ENVIRONMENT=${ENVIRONMENT},CORS_ORIGINS=${CORS_ORIGINS:-},CORS_ORIGIN_REGEX=${CORS_ORIGIN_REGEX}" \
-  --set-secrets="JWT_SECRET=${SECRET_NAME}:latest" \
-  --allow-unauthenticated
+  --config=cloudbuild.yaml \
+  --substitutions="\
+_BUCKET=${BUCKET},\
+_SERVICE=${SERVICE},\
+_ENVIRONMENT=${ENVIRONMENT},\
+_CORS_REGEX=${CORS_ORIGIN_REGEX},\
+_CORS_ORIGINS=${CORS_ORIGINS:-},\
+_MEMORY=${MEMORY},\
+_CPU=${CPU},\
+_MIN_INSTANCES=${MIN_INSTANCES},\
+_MAX_INSTANCES=${MAX_INSTANCES},\
+_TIMEOUT=${TIMEOUT_SECONDS},\
+_SA_NAME=${SA_NAME},\
+_SECRET_NAME=${SECRET_NAME},\
+_AR_REPO=${AR_REPO}" \
+  .
 
 URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --project="${PROJECT_ID}" --format="value(status.url)")
 echo ""

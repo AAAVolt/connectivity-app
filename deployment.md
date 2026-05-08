@@ -138,8 +138,10 @@ curl -X POST https://bizkaia-api-cos3esbs4a-no.a.run.app/admin/reload \
 
 ### Redeploy the backend
 ```bash
-bash infra/deploy.sh
+bash infra/deploy.sh prod      # or: staging
 ```
+
+The script submits the build to Cloud Build (no local Docker required); Cloud Build runs the test suites, builds the image, and deploys to Cloud Run. Substitutions match values in `infra/env/<target>.env`.
 
 ### Redeploy the frontend
 ```bash

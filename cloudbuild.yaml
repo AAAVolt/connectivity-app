@@ -1,23 +1,38 @@
-# Cloud Build pipeline — keep in sync with infra/deploy.sh
-# (deploy.sh is the authoritative source for ad-hoc deploys; this file mirrors
-# its `gcloud run deploy` invocation so triggered builds produce identical config.)
+# Cloud Build pipeline — single source of truth for build + deploy.
 #
-# Substitutions allow CI to set CORS_ORIGINS without touching this file:
-#   _CORS_ORIGINS  – comma-separated allow-list of explicit origins (default empty)
-#   _CORS_REGEX    – regex anchored to known bizkaia-api / frontend hosts
+# `infra/deploy.sh [prod|staging]` invokes this with substitutions populated
+# from `infra/env/<target>.env` so the same pipeline produces a correct prod
+# or staging deployment.
+#
+# Required substitutions (no defaults — deploy.sh must set them):
+#   _BUCKET        GCS bucket holding serving/*.parquet
+#   _SERVICE       Cloud Run service name
+#   _ENVIRONMENT   "production" or "staging" (read by the backend)
+#   _CORS_REGEX    Anchored CORS allowlist regex
+#   _MEMORY        e.g. "2Gi"
+#   _CPU           e.g. "1"
+#   _MIN_INSTANCES e.g. "0"
+#   _MAX_INSTANCES e.g. "5"
+#   _TIMEOUT       Request timeout in seconds, e.g. "120"
+#
+# Optional:
+#   _CORS_ORIGINS  Comma-separated explicit origins (default empty)
+#   _SA_NAME       Service account local name (default "bizkaia-backend")
+#   _SECRET_NAME   Secret Manager secret holding JWT_SECRET (default "bizkaia-jwt-secret")
+#   _AR_REPO       Artifact Registry repository name (default "bizkaia-images")
 
 substitutions:
   _CORS_ORIGINS: ''
-  _CORS_REGEX: '^https://(bizkaia-api-[a-z0-9-]+\.a\.run\.app|frontend-[a-z0-9-]+\.vercel\.app|[a-z0-9-]+-alessandrovoltan-4656s-projects\.vercel\.app)$'
+  _SA_NAME: 'bizkaia-backend'
+  _SECRET_NAME: 'bizkaia-jwt-secret'
+  _AR_REPO: 'bizkaia-images'
 
 steps:
   # ─── Run backend + worker tests before building/deploying ──────────────
   # A failing test must block the deploy. We can't run pytest inside the
   # production image (it has no dev deps and runs as a non-root user), so
   # spin up fresh python containers in the workspace and pip-install only
-  # what pytest needs. Both jobs run in parallel — Cloud Build's default
-  # waitFor is the previous step, but we override to `-` to make them
-  # depend on nothing (i.e. run as soon as the build starts).
+  # what pytest needs. Both jobs run in parallel.
 
   - id: backend-tests
     name: python:3.11-slim
@@ -41,7 +56,6 @@ steps:
       - -c
       - |
         set -euo pipefail
-        # geopandas needs system GDAL; install once, then deps + the package.
         apt-get update -qq && apt-get install -y --no-install-recommends \
           libgdal-dev gcc g++ >/dev/null
         pip install --quiet --upgrade pip
@@ -56,9 +70,9 @@ steps:
       - '-f'
       - 'docker/cloudrun.Dockerfile'
       - '-t'
-      - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
+      - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$BUILD_ID'
       - '-t'
-      - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:latest'
+      - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:latest'
       - '.'
 
   - id: deploy
@@ -67,20 +81,21 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'bizkaia-api'
-      - '--image=europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
+      - '${_SERVICE}'
+      - '--image=europe-southwest1-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$BUILD_ID'
       - '--region=europe-southwest1'
       - '--project=$PROJECT_ID'
-      - '--service-account=bizkaia-backend@$PROJECT_ID.iam.gserviceaccount.com'
-      - '--memory=2Gi'
-      - '--cpu=1'
-      - '--min-instances=0'
-      - '--max-instances=5'
-      - '--timeout=120'
-      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=bizkaia-data-pub,GCS_PREFIX=serving,ENVIRONMENT=production,CORS_ORIGINS=${_CORS_ORIGINS},CORS_ORIGIN_REGEX=${_CORS_REGEX}'
-      - '--set-secrets=JWT_SECRET=bizkaia-jwt-secret:latest'
+      - '--service-account=${_SA_NAME}@$PROJECT_ID.iam.gserviceaccount.com'
+      - '--memory=${_MEMORY}'
+      - '--cpu=${_CPU}'
+      - '--min-instances=${_MIN_INSTANCES}'
+      - '--max-instances=${_MAX_INSTANCES}'
+      - '--timeout=${_TIMEOUT}'
+      - '--startup-probe=httpGet.path=/readiness,initialDelaySeconds=5,periodSeconds=5,failureThreshold=20'
+      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=${_BUCKET},GCS_PREFIX=serving,ENVIRONMENT=${_ENVIRONMENT},CORS_ORIGINS=${_CORS_ORIGINS},CORS_ORIGIN_REGEX=${_CORS_REGEX}'
+      - '--set-secrets=JWT_SECRET=${_SECRET_NAME}:latest'
       - '--allow-unauthenticated'
 
 images:
-  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:$BUILD_ID'
-  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/bizkaia-images/bizkaia-api:latest'
+  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$BUILD_ID'
+  - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:latest'
