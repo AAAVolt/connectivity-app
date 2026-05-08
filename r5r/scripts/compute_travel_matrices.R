@@ -42,6 +42,16 @@ if (length(osm_files) == 0) {
 
 cat(sprintf("OSM: %s\n", basename(osm_files[1])))
 
+# Fail fast if the configured departure_date is outside any GTFS feed's
+# validity window. An expired feed silently degrades to street-only routing
+# and corrupts every downstream score, so we'd rather error here than ship
+# bad numbers. R5R_SCRIPTS_DIR lets the caller override the path; in the
+# container scripts live at /r5r/scripts/.
+gtfs_check_path <- Sys.getenv("R5R_SCRIPTS_DIR", "/r5r/scripts")
+source(file.path(gtfs_check_path, "check_gtfs_validity.R"))
+check_gtfs_validity(data_path = data_path,
+                    reference_date = config$departure_date)
+
 library(r5r)
 library(sf)
 library(data.table)
