@@ -5,13 +5,25 @@ import re
 from enum import Enum
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
 from backend.api.cache import get_cached, set_cached
 from backend.api.schemas import CellResponse, CellScoreDetail, parse_geometry
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
-from backend.db import DuckDBSession, get_db
+from backend.db import DuckDBResult, DuckDBSession, get_db
+
+
+def _query_all(db: DuckDBSession, sql: str, params: dict[str, object]) -> list:
+    """Run a query and materialise all rows. Sync helper for run_in_threadpool."""
+    result: DuckDBResult = db.execute(sql, params)
+    return result.fetchall()
+
+
+def _query_one(db: DuckDBSession, sql: str, params: dict[str, object]):
+    """Run a query and return the first row (or None). Sync helper."""
+    return db.execute(sql, params).one_or_none()
 
 router = APIRouter(prefix="/cells", tags=["cells"])
 
@@ -208,14 +220,16 @@ _AGGREGATE_SQL = """
 
 
 @router.get("/departure-times")
-def get_available_departure_times(
+async def get_available_departure_times(
     response: Response,
     tenant: TenantContext = Depends(get_tenant),
     db: DuckDBSession = Depends(get_db),
 ) -> list[str]:
     """Return sorted list of departure_time slots that have computed scores."""
     response.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=86400"
-    result = db.execute(
+    rows = await run_in_threadpool(
+        _query_all,
+        db,
         """
         SELECT DISTINCT departure_time
         FROM connectivity_scores
@@ -224,11 +238,11 @@ def get_available_departure_times(
         """,
         {"tid": tenant.tenant_id},
     )
-    return [row[0] for row in result.fetchall()]
+    return [row[0] for row in rows]
 
 
 @router.get("/geojson", response_class=Response)
-def get_cells_geojson(
+async def get_cells_geojson(
     mode: TransportMode | None = Query(None, description="Filter by transport mode"),
     purpose: str | None = Query(None, description="Filter by destination purpose (e.g. hospital, bachiller)"),
     metric: Metric = Query(Metric.score, description="Metric to return: score or travel_time"),
@@ -297,8 +311,7 @@ def get_cells_geojson(
             + "\n            ORDER BY cell_code\n            LIMIT $limit OFFSET $offset\n"
         )
 
-    result = db.execute(sql, params)
-    rows = result.fetchall()
+    rows = await run_in_threadpool(_query_all, db, sql, params)
 
     has_more = len(rows) > limit
     if has_more:
@@ -335,7 +348,7 @@ def get_cells_geojson(
 
 
 @router.get("/{cell_id}", response_model=CellResponse)
-def get_cell(
+async def get_cell(
     cell_id: int,
     response: Response,
     departure_time: str = Query(
@@ -349,7 +362,9 @@ def get_cell(
     response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=3600"
     dep_time = _validate_departure_time(departure_time)
 
-    result = db.execute(
+    row = await run_in_threadpool(
+        _query_one,
+        db,
         """
         SELECT gc.id, gc.cell_code, gc.population,
                cs.combined_score, cs.combined_score_normalized
@@ -361,12 +376,13 @@ def get_cell(
         """,
         {"cell_id": cell_id, "tid": tenant.tenant_id, "dep_time": dep_time},
     )
-    row = result.one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Cell not found")
 
-    scores_result = db.execute(
+    score_rows = await run_in_threadpool(
+        _query_all,
+        db,
         """
         SELECT mode, purpose, score, score_normalized
         FROM connectivity_scores
@@ -384,7 +400,7 @@ def get_cell(
             score=s.score,
             score_normalized=s.score_normalized,
         )
-        for s in scores_result.fetchall()
+        for s in score_rows
     ]
 
     return CellResponse(
