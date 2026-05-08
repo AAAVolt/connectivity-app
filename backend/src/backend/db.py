@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -128,6 +129,10 @@ class DuckDBSession:
 
 _conn: duckdb.DuckDBPyConnection | None = None
 _conn_lock = threading.Lock()
+# Path to the temp dir holding GCS-downloaded Parquet files, when DATA_SOURCE=gcs.
+# Tracked so we can delete it on the next reload / on shutdown instead of
+# leaking into /tmp on every /admin/reload call.
+_gcs_tmp_dir: Path | None = None
 
 # Tables that contain geometry columns (stored as WKB in Parquet).
 _GEO_TABLES: dict[str, list[str]] = {
@@ -184,10 +189,29 @@ def _download_gcs(bucket: str, prefix: str, dest: Path) -> None:
         blob.download_to_filename(str(local_path))
 
 
+def _cleanup_gcs_tmp_dir() -> None:
+    """Remove the previous GCS download dir if any. Safe to call repeatedly."""
+    global _gcs_tmp_dir
+    if _gcs_tmp_dir is not None:
+        try:
+            shutil.rmtree(_gcs_tmp_dir, ignore_errors=True)
+            logger.info("Cleaned up previous GCS temp dir: %s", _gcs_tmp_dir)
+        finally:
+            _gcs_tmp_dir = None
+
+
 def _resolve_data_dir(settings: Settings) -> Path:
-    """Return a local directory containing the Parquet files."""
+    """Return a local directory containing the Parquet files.
+
+    For ``data_source=gcs``, downloads to a fresh tempdir and tracks it so the
+    *previous* tempdir can be cleaned up on the next call. Otherwise repeated
+    ``/admin/reload`` calls would leak one tempdir per call into /tmp.
+    """
+    global _gcs_tmp_dir
     if settings.data_source == "gcs":
+        _cleanup_gcs_tmp_dir()
         tmp = Path(tempfile.mkdtemp(prefix="bizkaia_"))
+        _gcs_tmp_dir = tmp
         _download_gcs(settings.gcs_bucket, settings.gcs_prefix, tmp)
         return tmp
     return Path(settings.data_dir)
@@ -271,6 +295,32 @@ def init_db(settings: Settings | None = None) -> None:
 def reload_db() -> None:
     """Re-read Parquet files (e.g. after a worker data refresh)."""
     init_db()
+
+
+def is_ready() -> bool:
+    """Return True once init_db() has populated the in-memory DuckDB.
+
+    Intended for the /readiness probe — Cloud Run can keep traffic from a
+    cold instance until the Parquet load (and any GCS download) finishes.
+    """
+    return _conn is not None
+
+
+def close_db() -> None:
+    """Release DuckDB resources and remove any GCS temp dir.
+
+    Called from the FastAPI lifespan shutdown so SIGTERM from Cloud Run
+    leaves no leaked file descriptors or temp directories behind.
+    """
+    global _conn
+    with _conn_lock:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except duckdb.Error:
+                logger.warning("DuckDB close failed", exc_info=True)
+            _conn = None
+    _cleanup_gcs_tmp_dir()
 
 
 # ---------------------------------------------------------------------------

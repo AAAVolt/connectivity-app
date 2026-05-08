@@ -21,7 +21,7 @@ from backend.api.transit import router as transit_router
 from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.config import get_settings
-from backend.db import init_db, reload_db
+from backend.db import close_db, init_db, reload_db
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger.info("Loading DuckDB from %s (%s)", settings.data_dir, settings.data_source)
     init_db(settings)
-    yield
+    try:
+        yield
+    finally:
+        # Cloud Run sends SIGTERM with a short grace period; release DuckDB
+        # cleanly and remove any GCS temp directory we created so the next
+        # cold-start container doesn't inherit stale state on reuse.
+        logger.info("Shutting down: closing DuckDB and cleaning temp dirs")
+        close_db()
 
 
 def create_app() -> FastAPI:
