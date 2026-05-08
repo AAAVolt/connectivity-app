@@ -102,6 +102,8 @@ Docker images are stored in Artifact Registry:
 
 The browser never calls Cloud Run directly. All API calls go through the Next.js server-side proxy at `/api/backend/[...path]`, which forwards them to Cloud Run. This keeps the backend URL out of the browser.
 
+For the per-environment proxy target (production → prod API, preview → staging API), see [`docs/vercel-environments.md`](docs/vercel-environments.md).
+
 ---
 
 ## Auth flow
