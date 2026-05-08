@@ -7,7 +7,7 @@ COMPOSE := docker compose -f docker-compose.local.yml
         backend-shell worker-shell \
         test test-backend test-frontend \
         seed routing upload clean \
-        pipeline repro dag
+        pipeline repro dag loadtest
 
 # ── Lifecycle ───────────────────────────────────────────
 
@@ -74,6 +74,12 @@ repro:           ## Run the DVC pipeline (skips stages whose inputs are unchange
 dag:             ## Print the DVC pipeline DAG
 	@command -v dvc >/dev/null 2>&1 || { echo "Install dvc first: brew install dvc OR pipx install dvc"; exit 1; }
 	dvc dag
+
+# ── Load tests ──────────────────────────────────────────
+
+loadtest:        ## Ramp k6 against the local API (BASE_URL overrides)
+	@command -v k6 >/dev/null 2>&1 || { echo "Install k6 first: brew install k6"; exit 1; }
+	BASE_URL=$${BASE_URL:-http://localhost:8000} k6 run loadtest/cells.js
 
 # ── GCS Upload ──────────────────────────────────────────
 
