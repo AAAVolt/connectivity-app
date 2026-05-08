@@ -1,10 +1,10 @@
 """Bizkaia Connectivity MVP – FastAPI backend."""
 
-import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -22,14 +22,22 @@ from backend.auth.deps import get_tenant
 from backend.auth.schemas import TenantContext
 from backend.config import get_settings
 from backend.db import close_db, init_db, reload_db
+from backend.logging import configure_logging, get_logger
 
-logger = logging.getLogger(__name__)
+# Configure structured logging once, before any module-level loggers are
+# created. Subsequent get_logger() calls pick up the configured chain.
+configure_logging()
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    logger.info("Loading DuckDB from %s (%s)", settings.data_dir, settings.data_source)
+    logger.info(
+        "duckdb.loading",
+        data_dir=settings.data_dir,
+        data_source=settings.data_source,
+    )
     init_db(settings)
     try:
         yield
@@ -37,8 +45,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # Cloud Run sends SIGTERM with a short grace period; release DuckDB
         # cleanly and remove any GCS temp directory we created so the next
         # cold-start container doesn't inherit stale state on reuse.
-        logger.info("Shutting down: closing DuckDB and cleaning temp dirs")
+        logger.info("shutdown.start")
         close_db()
+        logger.info("shutdown.done")
 
 
 def create_app() -> FastAPI:
@@ -61,15 +70,27 @@ def create_app() -> FastAPI:
     )
 
     @application.middleware("http")
-    async def security_headers(request: Request, call_next):  # type: ignore[type-arg]
-        response: Response = await call_next(request)
+    async def request_context_and_security(request: Request, call_next):  # type: ignore[type-arg]
+        # Bind request_id (and any inbound trace id) to the structlog
+        # context so every log line emitted while handling this request
+        # carries it. clear_contextvars at the end prevents leakage across
+        # requests served on the same worker.
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+        )
+        try:
+            response: Response = await call_next(request)
+        finally:
+            structlog.contextvars.clear_contextvars()
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        # Request ID for tracing
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         response.headers["X-Request-ID"] = request_id
         return response
 
@@ -92,7 +113,7 @@ def create_app() -> FastAPI:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Admin role required",
             )
-        logger.info("Admin reload triggered by user=%s tenant=%s", tenant.user_id, tenant.tenant_id)
+        logger.info("admin.reload_triggered")
         reload_db()
         # Invalidate all server-side result caches after data reload
         from backend.api.cache import clear_all as clear_result_cache

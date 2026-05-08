@@ -8,7 +8,6 @@ SQLAlchemy interface used by our API routers.
 from __future__ import annotations
 
 import json
-import logging
 import shutil
 import tempfile
 import threading
@@ -17,10 +16,11 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import structlog
 
 from backend.config import Settings, get_settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Row / Result wrappers — keep API routers compatible with minimal changes
@@ -119,7 +119,7 @@ class DuckDBSession:
             except duckdb.CatalogException:
                 return False
             except duckdb.Error:
-                logger.warning("has_table(%s) failed unexpectedly", table_name, exc_info=True)
+                logger.warning("db.has_table_failed", table=table_name, exc_info=True)
                 return False
 
 
@@ -185,7 +185,7 @@ def _download_gcs(bucket: str, prefix: str, dest: Path) -> None:
         if not blob.name.endswith(".parquet"):
             continue
         local_path = dest / Path(blob.name).name
-        logger.info("Downloading gs://%s/%s → %s", bucket, blob.name, local_path)
+        logger.info("gcs.downloading", bucket=bucket, blob=blob.name, dest=str(local_path))
         blob.download_to_filename(str(local_path))
 
 
@@ -195,7 +195,7 @@ def _cleanup_gcs_tmp_dir() -> None:
     if _gcs_tmp_dir is not None:
         try:
             shutil.rmtree(_gcs_tmp_dir, ignore_errors=True)
-            logger.info("Cleaned up previous GCS temp dir: %s", _gcs_tmp_dir)
+            logger.info("gcs.tempdir_cleaned", path=str(_gcs_tmp_dir))
         finally:
             _gcs_tmp_dir = None
 
@@ -220,7 +220,7 @@ def _resolve_data_dir(settings: Settings) -> Path:
 def _load_table(conn: duckdb.DuckDBPyConnection, table: str, path: Path) -> None:
     """Load a single Parquet file into DuckDB, converting WKB geometry."""
     if not path.exists():
-        logger.warning("Skipping %s – file not found: %s", table, path)
+        logger.warning("db.parquet_missing", table=table, path=str(path))
         return
 
     conn.execute(
@@ -255,7 +255,7 @@ def _load_table(conn: duckdb.DuckDBPyConnection, table: str, path: Path) -> None
             """)
         except duckdb.Error:
             # Column might already be GEOMETRY, or not present at all
-            logger.debug("Geometry conversion skipped for %s.%s", table, col)
+            logger.debug("db.geom_conversion_skipped", table=table, column=col)
 
 
 def init_db(settings: Settings | None = None) -> None:
@@ -271,7 +271,7 @@ def init_db(settings: Settings | None = None) -> None:
 
     data_dir = _resolve_data_dir(settings)
 
-    logger.info("Initialising DuckDB (in-memory) from %s", data_dir)
+    logger.info("duckdb.init.start", data_dir=str(data_dir))
 
     _conn = duckdb.connect()  # in-memory
     _conn.install_extension("spatial")
@@ -289,7 +289,7 @@ def init_db(settings: Settings | None = None) -> None:
     except duckdb.Error:
         pass  # Table might not exist or centroid already present
 
-    logger.info("DuckDB initialised – %d tables loaded", len(_ALL_TABLES))
+    logger.info("duckdb.init.done", tables_loaded=len(_ALL_TABLES))
 
 
 def reload_db() -> None:
@@ -318,7 +318,7 @@ def close_db() -> None:
             try:
                 _conn.close()
             except duckdb.Error:
-                logger.warning("DuckDB close failed", exc_info=True)
+                logger.warning("duckdb.close_failed", exc_info=True)
             _conn = None
     _cleanup_gcs_tmp_dir()
 

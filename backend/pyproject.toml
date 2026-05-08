@@ -13,6 +13,7 @@ duckdb = "^1.1"
 pydantic = "^2.7"
 pydantic-settings = "^2.3"
 PyJWT = {extras = ["crypto"], version = "^2.8"}
+structlog = "^24.1"
 google-cloud-storage = {version = "^2.18", optional = true}
 
 [tool.poetry.extras]
