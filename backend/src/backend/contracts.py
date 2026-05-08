@@ -29,7 +29,11 @@ class SchemaContractError(RuntimeError):
 # don't break on numeric width changes (e.g. INTEGER vs BIGINT).
 _NUMERIC = {"BIGINT", "INTEGER", "DOUBLE", "FLOAT", "DECIMAL", "HUGEINT", "SMALLINT", "TINYINT"}
 _STRING = {"VARCHAR", "TEXT", "STRING"}
-_GEOMETRY = {"BLOB", "GEOMETRY", "VARCHAR"}  # WKB before conversion, GEOMETRY after
+# Geometry column name varies (geopandas writes 'geometry', the worker
+# renames to 'geom' before persisting some tables). Geometry presence is
+# implicitly verified by the spatial queries that run against these tables —
+# an absent or non-geometry column would crash a spatial SELECT loudly. We
+# therefore intentionally don't include geometry in the contract.
 
 
 @dataclass(frozen=True)
@@ -55,7 +59,6 @@ _CRITICAL_CONTRACTS: tuple[TableContract, ...] = (
             ColumnContract("cell_code", frozenset(_STRING)),
             ColumnContract("population", frozenset(_NUMERIC)),
             ColumnContract("tenant_id", frozenset(_STRING)),
-            ColumnContract("geometry", frozenset(_GEOMETRY)),
         ),
     ),
     TableContract(

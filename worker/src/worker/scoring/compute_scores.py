@@ -114,18 +114,30 @@ def compute_scores(
 
     conn.close()
 
-    # Write results as Parquet (atomic to avoid corruption on crash)
+    # Write results as Parquet (atomic to avoid corruption on crash). Each
+    # write is gated by the worker schema contract — a missing column or
+    # bad dtype raises before any file hits disk, so we can never push
+    # malformed data to GCS.
     if all_score_dfs:
         scores_df = pd.concat(all_score_dfs, ignore_index=True)
-        atomic_write_parquet(scores_df, serving / "connectivity_scores.parquet")
+        atomic_write_parquet(
+            scores_df, serving / "connectivity_scores.parquet",
+            table="connectivity_scores",
+        )
 
     if all_combined_dfs:
         combined_df = pd.concat(all_combined_dfs, ignore_index=True)
-        atomic_write_parquet(combined_df, serving / "combined_scores.parquet")
+        atomic_write_parquet(
+            combined_df, serving / "combined_scores.parquet",
+            table="combined_scores",
+        )
 
     if all_min_tt_dfs:
         min_tt_df = pd.concat(all_min_tt_dfs, ignore_index=True)
-        atomic_write_parquet(min_tt_df, serving / "min_travel_times.parquet")
+        atomic_write_parquet(
+            min_tt_df, serving / "min_travel_times.parquet",
+            table="min_travel_times",
+        )
 
     result_stats: dict[str, object] = {
         "scores_written": total_scores,

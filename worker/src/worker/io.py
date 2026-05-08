@@ -29,6 +29,7 @@ def atomic_write_parquet(
     dest: Path,
     *,
     index: bool = False,
+    table: str | None = None,
 ) -> None:
     """Write a DataFrame/GeoDataFrame to Parquet atomically.
 
@@ -36,7 +37,17 @@ def atomic_write_parquet(
     data, then uses ``os.replace()`` to move it into place.  This
     guarantees that *dest* is never in a half-written state — readers
     will see either the old file or the new file, never a partial one.
+
+    If *table* is given, the dataframe is validated against the worker's
+    schema contract (``worker.contracts``) before any I/O happens. A
+    contract violation raises ``SchemaContractError`` and no file is
+    written, so a regression in upstream code can't corrupt the serving
+    directory or push bad data to GCS.
     """
+    if table is not None:
+        from worker.contracts import assert_dataframe  # avoid import cycle
+        assert_dataframe(table, df)
+
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -50,7 +61,7 @@ def atomic_write_parquet(
         os.close(fd)
         df.to_parquet(tmp_path, index=index)
         os.replace(tmp_path, dest)
-        logger.debug("atomic_write_ok", path=str(dest), rows=len(df))
+        logger.debug("atomic_write_ok", path=str(dest), rows=len(df), table=table)
     except BaseException:
         # Clean up temp file on any failure (including KeyboardInterrupt)
         try:
