@@ -1389,20 +1389,50 @@ export default function DashboardPage() {
     }
   }, [data, queryClient]);
 
+  // Render the page chrome (header + tabs) regardless of data state so
+  // users see structure during the Cloud Run cold-start window (~10–18s
+  // for the heavy dashboard queries) rather than a blank spinner. The
+  // body below switches between spinner, error, and full content.
+  const chrome = (
+    <>
+      <div>
+        <h1 className="text-lg font-semibold">{t("dash.title")}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{t("dash.subtitle")}</p>
+      </div>
+      <div className="border-b flex gap-0 overflow-x-auto">
+        <TabButton active={tab === "overview"} onClick={() => setTab("overview")} icon={BarChart3}>
+          {t("dash.tab.overview")}
+        </TabButton>
+        <TabButton active={tab === "comarcas"} onClick={() => setTab("comarcas")} icon={MapIcon}>
+          {t("dash.tab.comarcas")}
+        </TabButton>
+        <TabButton active={tab === "municipios"} onClick={() => setTab("municipios")} icon={Building2}>
+          {t("dash.tab.municipios")}
+        </TabButton>
+      </div>
+    </>
+  );
+
   if (isLoading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
+      <div className="p-6 lg:p-8 w-full space-y-6">
+        {chrome}
+        <div className="flex h-64 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
+        </div>
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div className="p-6 lg:p-8 w-full">
-        <h1 className="text-lg font-semibold">{t("dash.error.title")}</h1>
-        <p className="mt-4 text-sm text-destructive">{error instanceof Error ? error.message : String(error)}</p>
-        <Button onClick={() => refetch()} variant="outline" size="sm" className="mt-3">{t("dash.retry")}</Button>
+      <div className="p-6 lg:p-8 w-full space-y-6">
+        {chrome}
+        <div>
+          <h2 className="text-lg font-semibold">{t("dash.error.title")}</h2>
+          <p className="mt-4 text-sm text-destructive">{error instanceof Error ? error.message : String(error)}</p>
+          <Button onClick={() => refetch()} variant="outline" size="sm" className="mt-3">{t("dash.retry")}</Button>
+        </div>
       </div>
     );
   }
