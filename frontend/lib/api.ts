@@ -11,11 +11,12 @@ interface RequestOptions {
 }
 
 // `fetch` has no default timeout, so a slow upstream (e.g. Cloud Run
-// cold-start on a heavy spatial query) will hang the request forever.
-// 15s is enough to swallow normal cold starts but short enough that a
-// genuinely-broken endpoint trips a per-call `.catch()` instead of
-// blocking a `Promise.all` indefinitely.
-const DEFAULT_TIMEOUT_MS = 15_000;
+// cold-start on a heavy spatial join in /dashboard/*-ranking, which
+// can run ~18s) will hang the request forever. 25s is wide enough to
+// absorb the slow legitimate endpoints but short enough that a genuinely
+// broken endpoint trips a per-call `.catch()` instead of blocking a
+// `Promise.all` indefinitely.
+const DEFAULT_TIMEOUT_MS = 25_000;
 
 export async function apiFetch<T>(
   path: string,

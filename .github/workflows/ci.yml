@@ -114,19 +114,30 @@ jobs:
       # source of map-test flakes.
       - run: pnpm build
       # Warm the backend before Playwright starts. Cloud Run scales to
-      # zero, so the first request after idle pays a ~10–15s cold start.
-      # Doing this synchronously here means the readiness assertion in
-      # the test suite isn't fighting cold-start latency.
+      # zero, so the first request after idle pays a 10–15s cold start
+      # *plus* the dashboard *-ranking endpoints run a heavy spatial
+      # join that's ~18s on cold cache. The dashboard hook fires all
+      # of these in a Promise.all and renders nothing until they resolve;
+      # warming them here gets us cached responses by the time the test
+      # opens the page.
       - name: Warm backend (skip on failure — readiness test will retry)
         continue-on-error: true
+        env:
+          DEPT: "departure_time=08:00"
         run: |
           for i in 1 2 3; do
-            if curl -sf -m 30 "$BACKEND_CLOUD_RUN_URL/readiness" >/dev/null; then
-              echo "backend ready"; exit 0
+            if curl -sf -m 60 "$BACKEND_CLOUD_RUN_URL/readiness" >/dev/null; then
+              echo "backend ready"; break
             fi
-            echo "warm attempt $i failed, retrying..."; sleep 5
+            echo "readiness attempt $i failed, retrying..."; sleep 5
           done
-          echo "backend warm failed; proceeding anyway (test will surface it)"
+          # Warm the slow endpoints sequentially. We don't care about the
+          # response, just that the cache is populated.
+          for path in "/dashboard/comarca-ranking?$DEPT" "/dashboard/municipality-ranking?$DEPT" "/sociodemographic/profiles"; do
+            echo "warming $path"
+            curl -sf -m 60 "$BACKEND_CLOUD_RUN_URL$path" -H "X-Tenant-ID: 00000000-0000-0000-0000-000000000001" >/dev/null \
+              || echo "  warm of $path failed (continuing)"
+          done
       - run: pnpm e2e
       - if: failure()
         uses: actions/upload-artifact@v4
