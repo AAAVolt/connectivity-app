@@ -83,9 +83,20 @@ steps:
       - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:latest'
       - '.'
 
+  # The `images:` block at the bottom only pushes AFTER all build steps
+  # finish — too late for the deploy step that needs the image by tag.
+  # Push explicitly here so `gcloud run deploy` can resolve the tag.
+  - id: push-image
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['build-image']
+    args:
+      - 'push'
+      - '--all-tags'
+      - 'europe-southwest1-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}'
+
   - id: deploy
     name: 'gcr.io/cloud-builders/gcloud'
-    waitFor: ['build-image']
+    waitFor: ['push-image']
     args:
       - 'run'
       - 'deploy'
