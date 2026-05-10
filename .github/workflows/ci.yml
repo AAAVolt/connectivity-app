@@ -15,8 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -39,13 +37,15 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/poetry.lock
+      # Resolve against poetry.lock so CI tests run on the same dep graph
+      # as the shipped Cloud Run image. `pip install .` would resolve a
+      # different version set, which defeats the purpose of a test gate.
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install pip-audit
-          pip install .
-          pip install pytest pytest-asyncio httpx
+          pip install --upgrade pip 'poetry==1.8.3' pip-audit
+          poetry config virtualenvs.create false
+          poetry install --no-interaction --no-ansi --with dev -E gcs
       - run: python -m pytest -x --tb=short
       - name: Audit Python dependencies
         run: pip-audit --skip-editable
@@ -69,23 +69,21 @@ jobs:
           GITLEAKS_CONFIG: .gitleaks.toml
 
   e2e:
-    # Golden-path Playwright tests against the local dev server. The dev
-    # server proxies /api/backend to BACKEND_CLOUD_RUN_URL, so we need a
-    # reachable backend; default to staging once it's live.
+    # Golden-path Playwright tests against a production-mode `next start`.
+    # Dev mode's on-demand compile makes the map test flaky on cold runs,
+    # so CI builds once and serves the artefact.
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
     env:
       # Tests assume a backend is reachable. Until staging is live, point
-      # this at prod (the API is public-read). Override the secret in CI
+      # this at prod (the API is public-read). Override the variable in CI
       # to hit staging once available.
       BACKEND_CLOUD_RUN_URL: ${{ vars.BACKEND_CLOUD_RUN_URL || 'https://bizkaia-api-cos3esbs4a-no.a.run.app' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -98,6 +96,24 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
       - run: pnpm e2e:install
+      # Prebuild so playwright's webServer can `next start` instead of
+      # `next dev`. Saves ~30s on first request and removes a major
+      # source of map-test flakes.
+      - run: pnpm build
+      # Warm the backend before Playwright starts. Cloud Run scales to
+      # zero, so the first request after idle pays a ~10–15s cold start.
+      # Doing this synchronously here means the readiness assertion in
+      # the test suite isn't fighting cold-start latency.
+      - name: Warm backend (skip on failure — readiness test will retry)
+        continue-on-error: true
+        run: |
+          for i in 1 2 3; do
+            if curl -sf -m 30 "$BACKEND_CLOUD_RUN_URL/readiness" >/dev/null; then
+              echo "backend ready"; exit 0
+            fi
+            echo "warm attempt $i failed, retrying..."; sleep 5
+          done
+          echo "backend warm failed; proceeding anyway (test will surface it)"
       - run: pnpm e2e
       - if: failure()
         uses: actions/upload-artifact@v4

@@ -34,6 +34,10 @@ steps:
   # spin up fresh python containers in the workspace and pip-install only
   # what pytest needs. Both jobs run in parallel.
 
+  # Backend tests run against the locked dependency graph — same as the
+  # production image — via `poetry install`, not `pip install .`. Doing
+  # otherwise would gate the deploy on a different version set than what
+  # actually ships, which is what a test gate is supposed to prevent.
   - id: backend-tests
     name: python:3.11-slim
     entrypoint: bash
@@ -44,7 +48,9 @@ steps:
       - |
         set -euo pipefail
         pip install --quiet --upgrade pip
-        pip install --quiet . pytest pytest-asyncio httpx
+        pip install --quiet 'poetry==1.8.3'
+        poetry config virtualenvs.create false
+        poetry install --no-interaction --no-ansi --with dev -E gcs
         python -m pytest -x --tb=short
 
   - id: worker-tests
@@ -59,7 +65,9 @@ steps:
         apt-get update -qq && apt-get install -y --no-install-recommends \
           libgdal-dev gcc g++ >/dev/null
         pip install --quiet --upgrade pip
-        pip install --quiet . pytest
+        pip install --quiet 'poetry==1.8.3'
+        poetry config virtualenvs.create false
+        poetry install --no-interaction --no-ansi --with dev -E gcs
         python -m pytest -x --tb=short
 
   - id: build-image
@@ -92,7 +100,12 @@ steps:
       - '--max-instances=${_MAX_INSTANCES}'
       - '--timeout=${_TIMEOUT}'
       - '--startup-probe=httpGet.path=/readiness,initialDelaySeconds=5,periodSeconds=5,failureThreshold=20'
-      - '--set-env-vars=DATA_SOURCE=gcs,GCS_BUCKET=${_BUCKET},GCS_PREFIX=serving,ENVIRONMENT=${_ENVIRONMENT},CORS_ORIGINS=${_CORS_ORIGINS},CORS_ORIGIN_REGEX=${_CORS_REGEX}'
+      # `^@^` is gcloud's alternate-delimiter form. We need it because
+      # CORS_ORIGINS is documented as comma-separated and CORS_ORIGIN_REGEX
+      # may contain commas in the future — both would otherwise collide
+      # with gcloud's default `,` field separator and silently mangle the
+      # env-var assignment.
+      - '--set-env-vars=^@^DATA_SOURCE=gcs@GCS_BUCKET=${_BUCKET}@GCS_PREFIX=serving@ENVIRONMENT=${_ENVIRONMENT}@CORS_ORIGINS=${_CORS_ORIGINS}@CORS_ORIGIN_REGEX=${_CORS_REGEX}'
       - '--set-secrets=JWT_SECRET=${_SECRET_NAME}:latest'
       - '--allow-unauthenticated'
 

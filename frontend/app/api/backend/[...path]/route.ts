@@ -8,9 +8,19 @@ export const dynamic = "force-dynamic";
 // Belt-and-braces: never cache fetch responses for this route.
 export const fetchCache = "force-no-store";
 
-const CLOUD_RUN_URL = process.env.BACKEND_CLOUD_RUN_URL!;
+// Read once at module load. Without this guard a missing env var produces
+// `https://undefined/...` fetches that surface as opaque 502s and confuse
+// e2e debugging — most often when a Vercel preview is missing the variable.
+const CLOUD_RUN_URL = process.env.BACKEND_CLOUD_RUN_URL;
 
 async function proxy(req: NextRequest, path: string): Promise<NextResponse> {
+  if (!CLOUD_RUN_URL) {
+    console.error("[proxy] BACKEND_CLOUD_RUN_URL is not set");
+    return NextResponse.json(
+      { detail: "Backend proxy is not configured" },
+      { status: 500 },
+    );
+  }
   const targetUrl = `${CLOUD_RUN_URL}/${path}${req.nextUrl.search}`;
 
   const forwardHeaders: Record<string, string> = {};

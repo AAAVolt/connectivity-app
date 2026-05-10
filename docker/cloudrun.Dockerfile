@@ -11,15 +11,16 @@ WORKDIR /app
 RUN pip install --no-cache-dir poetry==1.8.3 \
     && poetry config virtualenvs.create false
 
-# Install dependencies (cached layer)
-COPY backend/pyproject.toml backend/poetry.lock* ./
+# Install dependencies (cached layer). --chown on COPY avoids a separate
+# `chown -R /app` layer that would double the image size by rewriting
+# every site-packages file.
+COPY --chown=app:app backend/pyproject.toml backend/poetry.lock* ./
 RUN poetry install --no-interaction --no-ansi --no-root --only main -E gcs
 
 # Copy source and install package
-COPY backend/ .
+COPY --chown=app:app backend/ .
 RUN poetry install --no-interaction --no-ansi --only main -E gcs
 
-RUN chown -R app:app /app
 USER app
 EXPOSE 8080
 # Cloud Run uses PORT env var (default 8080)

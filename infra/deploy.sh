@@ -54,26 +54,29 @@ else
 fi
 
 # ── Submit the build ──
-# Substitutions match the names declared in cloudbuild.yaml. We escape the
-# CORS regex's commas because gcloud's --substitutions parser splits on
-# them at the top level.
+# We use gcloud's alternate-delimiter substitutions form (`^@^...`) so
+# values can safely contain commas — CORS_ORIGINS is documented as
+# comma-separated, and CORS_ORIGIN_REGEX is regex-shaped. The default `,`
+# delimiter would silently truncate either. `@` is chosen because no
+# legitimate substitution value should contain it; if that ever changes,
+# pick a different sentinel here.
 echo "==> Submitting build to Cloud Build (project: ${PROJECT_ID})"
 gcloud builds submit \
   --project="${PROJECT_ID}" \
   --config=cloudbuild.yaml \
-  --substitutions="\
-_BUCKET=${BUCKET},\
-_SERVICE=${SERVICE},\
-_ENVIRONMENT=${ENVIRONMENT},\
-_CORS_REGEX=${CORS_ORIGIN_REGEX},\
-_CORS_ORIGINS=${CORS_ORIGINS:-},\
-_MEMORY=${MEMORY},\
-_CPU=${CPU},\
-_MIN_INSTANCES=${MIN_INSTANCES},\
-_MAX_INSTANCES=${MAX_INSTANCES},\
-_TIMEOUT=${TIMEOUT_SECONDS},\
-_SA_NAME=${SA_NAME},\
-_SECRET_NAME=${SECRET_NAME},\
+  --substitutions="^@^\
+_BUCKET=${BUCKET}@\
+_SERVICE=${SERVICE}@\
+_ENVIRONMENT=${ENVIRONMENT}@\
+_CORS_REGEX=${CORS_ORIGIN_REGEX}@\
+_CORS_ORIGINS=${CORS_ORIGINS:-}@\
+_MEMORY=${MEMORY}@\
+_CPU=${CPU}@\
+_MIN_INSTANCES=${MIN_INSTANCES}@\
+_MAX_INSTANCES=${MAX_INSTANCES}@\
+_TIMEOUT=${TIMEOUT_SECONDS}@\
+_SA_NAME=${SA_NAME}@\
+_SECRET_NAME=${SECRET_NAME}@\
 _AR_REPO=${AR_REPO}" \
   .
 

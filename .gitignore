@@ -15,6 +15,10 @@ node_modules/
 .next/
 out/
 *.tsbuildinfo
+# Repo standardises on pnpm. Block npm/yarn lockfiles so a stray
+# `npm install` can't reintroduce a parallel dep tree.
+package-lock.json
+yarn.lock
 
 # R
 .Rhistory
