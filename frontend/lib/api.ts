@@ -6,7 +6,16 @@ interface RequestOptions {
   token?: string;
   method?: string;
   body?: unknown;
+  // Per-call override; defaults to DEFAULT_TIMEOUT_MS.
+  timeoutMs?: number;
 }
+
+// `fetch` has no default timeout, so a slow upstream (e.g. Cloud Run
+// cold-start on a heavy spatial query) will hang the request forever.
+// 15s is enough to swallow normal cold starts but short enough that a
+// genuinely-broken endpoint trips a per-call `.catch()` instead of
+// blocking a `Promise.all` indefinitely.
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 export async function apiFetch<T>(
   path: string,
@@ -22,7 +31,10 @@ export async function apiFetch<T>(
     headers["Authorization"] = `Bearer ${options.token}`;
   }
 
-  const init: RequestInit = { headers };
+  const init: RequestInit = {
+    headers,
+    signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  };
   if (options.method) init.method = options.method;
   if (options.body) init.body = JSON.stringify(options.body);
 

@@ -53,8 +53,13 @@ jobs:
           poetry config virtualenvs.create false
           poetry install --no-interaction --no-ansi --with dev -E gcs
       - run: python -m pytest -x --tb=short
-      - name: Audit Python dependencies
-        run: pip-audit --skip-editable
+      - name: Audit production Python dependencies
+        # Audit only the deps that ship to Cloud Run. Without `--only main`
+        # we'd flag CVEs in poetry/pytest themselves — those are dev tools,
+        # never deployed, and would block the gate on irrelevant noise.
+        run: |
+          poetry export --only main --without-hashes -f requirements.txt -o /tmp/prod-reqs.txt
+          pip-audit --requirement /tmp/prod-reqs.txt --strict
 
   dependency-review:
     runs-on: ubuntu-latest
