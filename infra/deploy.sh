@@ -81,6 +81,29 @@ _AR_REPO=${AR_REPO}" \
   .
 
 URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --project="${PROJECT_ID}" --format="value(status.url)")
+
+# ── Warm cold endpoints ──
+# Cloud Run scales to zero and the dashboard *-ranking endpoints run a
+# heavy spatial join (~30s cold). The frontend's apiFetch has a 25s
+# timeout, so the first real visitor after a fresh deploy would see
+# municipality-ranking time out. CI does this same warm-up before e2e
+# (.github/workflows/ci.yml), but a manual deploy needs it too.
+echo ""
+echo "==> Warming new revision (cold ranking endpoints exceed frontend timeout)"
+DEPT="departure_time=08:00"
+TENANT_HEADER="X-Tenant-ID: 00000000-0000-0000-0000-000000000001"
+for i in 1 2 3; do
+  if curl -sf -m 60 "${URL}/readiness" >/dev/null; then
+    echo "    backend ready"; break
+  fi
+  echo "    readiness attempt ${i} failed, retrying..."; sleep 5
+done
+for path in "/dashboard/comarca-ranking?${DEPT}" "/dashboard/municipality-ranking?${DEPT}" "/sociodemographic/profiles"; do
+  echo "    warming ${path}"
+  curl -sf -m 60 "${URL}${path}" -H "${TENANT_HEADER}" >/dev/null \
+    || echo "      warm of ${path} failed (continuing)"
+done
+
 echo ""
 echo "==> Deployed!"
 echo "    Target: ${TARGET}"
